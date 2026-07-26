@@ -63,7 +63,18 @@ UA = "nowcast/1.0 (station Tmax research)"
 def from_db(db, table, stations, dates):
     """从 cn.sqlite 读指定日期的逐时观测，结构与训练一致。"""
     days = defaultdict(dict)
+    if not os.path.exists(db):
+        print(f"[error] 找不到实况库 {db}。新机器请先跑 ./bootstrap.sh 建数据",
+              file=sys.stderr)
+        raise SystemExit(1)
     conn = sqlite3.connect(db)
+    if not conn.execute("SELECT name FROM sqlite_master WHERE type='table' "
+                        "AND name=?", (table,)).fetchone():
+        print(f"[error] {db} 里没有 {table} 表 —— 数据库是空的或建歪了。\n"
+              f"        新机器请跑 ./bootstrap.sh；已有库请跑\n"
+              f"        python3 iem_multi.py --db {db} --stations ... --backfill",
+              file=sys.stderr)
+        raise SystemExit(1)
     cols = {c[1] for c in conn.execute(f"PRAGMA table_info({table})")}
     tcol = "valid_time_gmt" if "valid_time_gmt" in cols else "obs_time_utc"
     get = lambda c: c if c in cols else "NULL"

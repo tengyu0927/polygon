@@ -10,6 +10,53 @@ ZUUU 成都双流、ZUCK 重庆江北、ZHHH 武汉天河、ZSQD 青岛胶东）
 
 ---
 
+---
+
+## 零、新机器上怎么跑起来
+
+```bash
+git clone <你的仓库地址> && cd ploygon
+pip3 install -r requirements.txt      # 可选，缺了也能跑（见下）
+./bootstrap.sh                        # 建数据，完整版约 1.5-2 小时
+python3 check_consistency.py          # 确认环境没问题，18 项应全过
+./run_hourly.sh                       # 出预报
+```
+
+**仓库里没有数据**：实况库 510MB + 6 个模式库约 1.2GB，远超 GitHub 单文件
+100MB 的硬上限。全部可由 `bootstrap.sh` 重建 —— 代价是时间不是信息。
+
+| 命令 | 建什么 | 耗时 | 能跑什么 |
+|---|---|---|---|
+| `./bootstrap.sh --obs-only` | 只建实况库 | 30-60 分钟 | 12-15 时的纯实况档 |
+| `./bootstrap.sh --quick` | 最近 2 年实况 + 6 模式 | 约 1 小时 | 全部预报，但重训时长序列不足 |
+| `./bootstrap.sh` | 1995 年起实况 + 6 模式 | 1.5-2 小时 | 全部，含重训 |
+
+**模型权重是随仓库走的**（`model.json`、`nowcast_nwp.json`、`nowcast.json`、
+`nowcast_late.json`，共 7MB），所以数据一建好就能直接预报，不必先训练。
+模型会随天气型漂移，建议按第四节的周期重训。
+
+### 依赖
+
+**核心推理不需要任何第三方库** —— 模型 JSON 里只有权重，纯标准库就能算。
+`requirements.txt` 里两个都是「有则更好，无则自动降级」：
+
+- `numpy`：训练提速几十倍。缺失时走纯 Python 实现，**结果一致**
+- `scikit-learn`：岭回归+GBM 融合里的 GBM 部分。缺失时 `predict_mos.py`
+  自动降级为纯岭回归并打警告，**D+1 会从 1.00 退到 1.08**
+
+> ⚠️ 用 cron 时务必在 crontab 里钉住 PATH，否则会命中系统自带的
+> `/usr/bin/python3`（通常没有这两个库），融合静默降级且不报错：
+> ```cron
+> PATH=/opt/homebrew/bin:/usr/bin:/bin
+> ```
+
+### 许可
+
+本仓库为 **AGPL-3.0**。原因是 `merge_mos.py` 的 DEB 算法参照
+[PolyWeather](https://github.com/yangyuan-zhen/PolyWeather)（AGPL-3.0）写成，
+详见 `NOTICE.md`。数据来源与署名要求也在那里。
+
+
 ## 一、目前哪种最准
 
 所有数字为**取整后**的 MAE（℃）。真值是整数度，取整是上线口径，
