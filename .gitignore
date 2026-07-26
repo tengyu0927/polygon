@@ -1,0 +1,30 @@
+# ---- 数据库: 共约 2.1GB，全部可由 bootstrap.sh 重建，不进仓库 ----
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# ---- 训练集 csv: 由 build_mos_dataset.py / merge_mos.py 生成 ----
+mos.csv
+mos_*.csv
+cn_daily.csv
+zspd_daily.csv
+
+# ---- 运行产物 ----
+*.log
+pred.csv
+pred_mos.csv
+pred_*.txt
+backtest_*.csv
+today.csv
+
+# ---- 归档与临时 ----
+archive/
+__pycache__/
+*.pyc
+.DS_Store
+.venv/
+venv/
+
+# ---- 模型备份（当前模型要进仓库，历史备份不要）----
+*.json.bak
+*.json.bak[0-9]
