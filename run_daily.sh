@@ -13,6 +13,11 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# cron 的 PATH 里没有 /usr/sbin，joblib 找不到 sysctl 会往日志里吐一大段
+# traceback（无害但淹没真正的错误）。补上并显式告诉它核数。
+export PATH="$PATH:/usr/sbin"
+export LOKY_MAX_CPU_COUNT="${LOKY_MAX_CPU_COUNT:-$(sysctl -n hw.physicalcpu 2>/dev/null || echo 4)}"
+
 # 单实例锁。IEM 偶尔卡住，没有锁的话每小时叠一个僵尸进程、互相抢 cn.sqlite
 # 的写锁，越堆越死（实测 14:15 那轮挂了 21 分钟没退）。
 LOCK=/tmp/ploygon_run_daily.lock
@@ -75,7 +80,7 @@ PY
 
 {
     echo
-    echo "########## $(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S')  D+1/D+2 七模式 MOS ##########"
+    echo "########## $(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S')  D+1/D+2 六模式 MOS ##########"
     # 显式传 --date。predict_mos.py 内部默认取「现在」，如果本脚本在 23:5x 起跑、
     # 取数耗时跨过午夜，目标日会整体错一天。传死日期就与起跑时刻无关了
     python3 predict_mos.py --date "$TODAY" --ahead "$AHEAD" \

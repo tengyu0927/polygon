@@ -95,13 +95,20 @@ def cmd_record(args):
     conn = sqlite3.connect(args.db)
     conn.executescript(DDL)
     now = datetime.now(UTC).isoformat(timespec="seconds")
+    today = datetime.now(CST).date().isoformat()
     n = 0
     print(f"\n{'='*70}")
     print(f"MOS vs TAF（{now[:16]}Z 记录）")
     print(f"  {'站点':<8}{'目标日':<12}{'时效':>5}{'MOS':>7}{'TAF TX':>9}{'分歧':>7}")
+    skipped = 0
     for r in preds:
         k = (r["station"], r["date"])
         t = tx.get(k)
+        # 目标日已过（或就是今天且已过午后）时，当前 TAF 的有效期早就不覆盖
+        # 那天的峰值窗口，只会记一行空值。跳过，别把样本库填满 NULL
+        if t is None and r["date"] <= today:
+            skipped += 1
+            continue
         gap = "" if t is None else f"{int(r['pred_round']) - t[0]:+.0f}"
         print(f"  {r['station']:<8}{r['date']:<12}D+{r['lead']:<3}"
               f"{r['pred_round']:>7}{('--' if t is None else f'{t[0]:.0f}'):>9}"
@@ -118,7 +125,10 @@ def cmd_record(args):
         n += 1
     conn.commit()
     conn.close()
-    print(f"\n已记录 {n} 条到 {args.db}。攒够样本后跑 --analyze")
+    msg = f"\n已记录 {n} 条到 {args.db}"
+    if skipped:
+        msg += f"（跳过 {skipped} 条: 目标日已过，当前 TAF 不覆盖其峰值窗口）"
+    print(msg + "。攒够样本后跑 --analyze")
     return 0
 
 

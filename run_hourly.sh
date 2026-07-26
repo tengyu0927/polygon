@@ -11,6 +11,8 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+export PATH="$PATH:/usr/sbin"
+
 # 单实例锁。IEM 偶尔卡住，没有锁的话每小时叠一个僵尸进程、互相抢 cn.sqlite
 # 的写锁，越堆越死（实测 14:15 那轮挂了 21 分钟没退）。
 LOCK=/tmp/ploygon_run_hourly.lock
