@@ -308,8 +308,10 @@ def fetch_range(stations, sts, ets, timeout=120, throttle=1.2):
               ("sts", sts), ("ets", ets)]
     for s in stations:
         params.append(("station", s))
+    # retries 别设小。国内直连 IEM 常见 "Connection reset by peer"，
+    # 单次失败很正常，重试几乎都能成；重试用完才是真失败
     return http_get(IEM_ASOS + "?" + urllib.parse.urlencode(params),
-                    retries=2, timeout=timeout, throttle=throttle)
+                    retries=5, timeout=timeout, throttle=throttle)
 
 
 def run_recent(conn, args, sids, days):

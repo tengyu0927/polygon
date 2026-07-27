@@ -39,6 +39,7 @@ MODELS=ecmwf_ifs025,cma_grapes_global,icon_global,jma_gsm,gem_global
 HOUR=${1:-$(TZ=Asia/Shanghai date +%-H)}
 [[ "${1:-}" == --* ]] && HOUR=$(TZ=Asia/Shanghai date +%-H)
 NOFETCH=""
+USE_LIVE=""
 for a in "$@"; do [[ "$a" == "--no-fetch" ]] && NOFETCH=1; done
 
 TODAY=$(TZ=Asia/Shanghai date +%Y-%m-%d)
@@ -63,10 +64,13 @@ if [[ -z "$NOFETCH" ]]; then
     echo "更新实况…" >&2
     # 增量抓最近 2 天，秒级。别用 --update —— 那是重抓两整年，
     # IEM 慢起来能挂几十分钟，而 urlopen 的 timeout 只管单次 socket 读
-    python3 iem_multi.py --db cn.sqlite --stations "$STATIONS" \
-        --recent-days 2 --timeout 120 >/dev/null 2>&1 \
-        || echo "[warn] 实况增量更新失败，用库里已有的数据继续" >&2
-    python3 iem_multi.py --db cn.sqlite --daily >/dev/null 2>&1 || true
+    if python3 iem_multi.py --db cn.sqlite --stations "$STATIONS" \
+            --recent-days 2 --timeout 120 >/dev/null 2>&1; then
+        python3 iem_multi.py --db cn.sqlite --daily >/dev/null 2>&1 || true
+    else
+        echo "[warn] IEM 实况更新失败，本轮改用 AWC 实时源（--live）" >&2
+        USE_LIVE=--live
+    fi
 
     # 这里**不**再重建 mos_*.csv。predict_nowcast.py 的模式特征是自己联网取的
     # （fetch_nwp / fetch_m2），压根不读 csv —— 每小时重建一遍纯属浪费:
@@ -78,7 +82,7 @@ fi
     echo
     echo "########## $(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S')  ${HOUR} 时起报  模型 $MODEL ##########"
     python3 predict_nowcast.py --model "$MODEL" --cutoff "$HOUR" \
-        --hurdle --p90 --verbose ${EXTRA[@]+"${EXTRA[@]}"}
+        --hurdle --p90 --verbose $USE_LIVE ${EXTRA[@]+"${EXTRA[@]}"}
 } 2>&1 | tee -a "$LOG"
 
 echo "已追加到 $LOG" >&2
