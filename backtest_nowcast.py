@@ -28,6 +28,38 @@ import train_mos as T
 import train_nowcast as N
 
 
+# 两段式的第一段: 先预报「今天几点见顶」，再把它喂给主模型。
+# 动机是实测误差随见顶时刻单调上升（13 时截止: ≤13时见顶 MAE 0.28，
+# 16-17时见顶 0.77），而模型只有 clim_peak_h 这个分站分月常数，
+# 知道「重庆通常晚」却不知道「今天会不会晚」。
+#
+# **实测未采用**（--peak-feat 默认关）。七档配对检验:
+#   9/10/11 时 ΔMAE -0.014 / -0.008 / -0.012（方向偏坏，均不显著）
+#   12/14/15 时 +0.003 / +0.007 / +0.003（均不显著）
+#   13 时     +0.019 [+0.007, +0.033] 显著 —— 但测了 7 档出现 1 档显著，
+#             大概率是多重比较的产物，区间下界也只有 +0.007
+# 决定性证据是目标人群没站住: 16 时后见顶的 102 天上，七档变化
+# +0.010/0.000/-0.029/+0.020/-0.020/-0.020/-0.010，正负交替、无一致方向。
+# 机制若成立，这一层该全线改善。开关保留，样本更多时可重测。
+PEAK_FEATS = ["pk_pred", "pk_minus_clim", "pk_minus_cutoff"]
+
+
+def add_peak_feats(rows, model, med, names, cutoff):
+    """把辅助模型预报的见顶时刻写进特征。model 为 None 时全部置空。"""
+    if model is None:
+        for r in rows:
+            for k in PEAK_FEATS:
+                r["f"][k] = None
+        return
+    X, _ = N.matrix(rows, med, names)
+    for r, p in zip(rows, T.ridge_pred(model, X)):
+        p = min(22.0, max(8.0, p))            # 见顶时刻限定在 8-22 时
+        r["f"]["pk_pred"] = p
+        cp = r["f"].get("clim_peak_h")
+        r["f"]["pk_minus_clim"] = None if cp is None else p - cp
+        r["f"]["pk_minus_cutoff"] = p - cutoff
+
+
 def clim_before(days, cutoffs, cut_date):
     """只用 cut_date 之前的日子估气候态。逐块重算，避免用到未来。"""
     rise = {c: defaultdict(list) for c in cutoffs}
@@ -59,7 +91,7 @@ def blocks(start, end, days_per):
     return out
 
 
-def fit_block(tr, names, alphas, val_days=90):
+def fit_block(tr, names, alphas, val_days=90, peak=False, cutoff=12):
     """分站两段式 + 合并兜底。alpha 用训练期末尾 val_days 天选。"""
     ds = sorted({r["date"] for r in tr})
     if len(ds) < val_days * 2:
@@ -70,6 +102,14 @@ def fit_block(tr, names, alphas, val_days=90):
     fit_va = [r for r in tr if r["date"] >= vcut]
     if not fit_tr or not fit_va:
         fit_tr, fit_va = tr, tr
+
+    def fit_peak(rows_tr, names_):
+        """辅助模型: 用上午特征回归当天实际见顶时刻。"""
+        sub = [r for r in rows_tr if r.get("peak_h") is not None]
+        if len(sub) < 300:
+            return None
+        X, med_ = N.matrix(sub, None, names_)
+        return T.ridge_fit(X, [float(r["peak_h"]) for r in sub], 10.0), med_
 
     def one(rows_tr, rows_va):
         X, med = N.matrix(rows_tr, None, names)
@@ -89,6 +129,16 @@ def fit_block(tr, names, alphas, val_days=90):
                 "ordinal": N.fit_ordinal(rows_tr, best[0], med, names),
                 "q90": q90}
 
+    # 第一段: 见顶时刻辅助模型。只用训练集拟合，再把预报值注入全部行的特征
+    base_names = [n for n in names if n not in PEAK_FEATS]
+    peak_model = None
+    if peak:
+        got = fit_peak(fit_tr, base_names)
+        if got:
+            peak_model, peak_med = got
+            for rs in (fit_tr, fit_va):
+                add_peak_feats(rs, peak_model, peak_med, base_names, cutoff)
+
     pooled = one(fit_tr, fit_va)
     per = {}
     for stn in sorted({r["stn"] for r in tr}):
@@ -96,6 +146,10 @@ def fit_block(tr, names, alphas, val_days=90):
         s_va = [r for r in fit_va if r["stn"] == stn]
         if len(s_tr) >= 300 and s_va:
             per[stn] = one(s_tr, s_va)
+    if peak and peak_model is not None:
+        pooled["peak"] = (peak_model, peak_med, base_names, cutoff)
+        for v in per.values():
+            v["peak"] = (peak_model, peak_med, base_names, cutoff)
     return pooled, per
 
 
@@ -215,6 +269,8 @@ def main() -> int:
                     default=[1, 3, 10, 30, 100, 300])
     ap.add_argument("--nwp-csv2", nargs="+", default=[],
                     help="追加模式的 mos 格式 csv（可多个），加多模式与集合离散度特征")
+    ap.add_argument("--peak-feat", action="store_true",
+                    help="加「预报见顶时刻」辅助模型的输出当特征（实验）")
     ap.add_argument("--blend-mos", action="store_true",
                     help="把滚动重训的 D+1 MOS 预报当特征加进来（组合两条路线）")
     ap.add_argument("--no-hurdle", action="store_true")
@@ -240,7 +296,9 @@ def main() -> int:
         print(f"  NWP 覆盖 {len(nwp_map)} 站日", file=sys.stderr)
 
     names = list(N.FEATS) if args.nwp_csv else \
-        [n for n in N.FEATS if not n.startswith("nwp")]
+        [n for n in N.FEATS if not N.is_nwp_feat(n)]
+    if args.peak_feat:
+        names = names + PEAK_FEATS
 
     m2_maps = []
     if args.nwp_csv2:
@@ -327,10 +385,13 @@ def main() -> int:
                 print(f"[warn] 截止 {cutoff} 块 {b0}: 训练 {len(tr)} / 评估 "
                       f"{len(te)}，跳过", file=sys.stderr)
                 continue
-            pooled, per = fit_block(tr, names, args.alphas)
+            pooled, per = fit_block(tr, names, args.alphas,
+                                    peak=args.peak_feat, cutoff=cutoff)
             for stn in sorted({r["stn"] for r in te}):
                 sub = [r for r in te if r["stn"] == stn]
                 m = per.get(stn, pooled)
+                if m.get("peak"):
+                    add_peak_feats(sub, *m["peak"])
                 mean_r = predict(m, sub, names, not args.no_hurdle)
                 pmf = rise_pmf(m, sub, names)
                 mode_r = decide(pmf, 0) if pmf else mean_r

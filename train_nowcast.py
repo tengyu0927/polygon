@@ -299,8 +299,12 @@ def make_samples(days, cutoff, clim_r, clim_p, nwp_map, split_year, m2_maps=()):
             add_m2_feats(f, msf, [mm.get((stn, d)) for mm in m2_maps])
         add_interactions(f)
         tmax = max(v["t"] for v in hrs.values())
+        # 当天实际见顶时刻。只当辅助模型的训练目标用，绝不进 FEATS ——
+        # 它是未来信息，混进主模型就是泄漏
+        ph_ = [h for h, v in hrs.items() if v["t"] >= tmax - 1e-9]
         out.append({"stn": stn, "date": d, "year": dt.year, "month": mo,
-                    "so_far": msf, "tmax": tmax, "rise": tmax - msf, "f": f})
+                    "so_far": msf, "tmax": tmax, "rise": tmax - msf,
+                    "peak_h": min(ph_) if ph_ else None, "f": f})
 
     # 近期升幅异常: 前 3/7 个可用日的 (实际升幅 - 当月气候升幅) 均值。
     # 只回看更早的日子，预报时这些都已知。捕捉「这几天午后偏爱升得多/少」的
