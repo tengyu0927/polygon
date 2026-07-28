@@ -1,0 +1,201 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+verify.py — 每天把「预报 vs 实况」按站累计，找出站级系统性偏差
+
+    python3 verify.py                    # 解析日志、回填实况、入库（幂等）
+    python3 verify.py --report           # 看分站分档的偏差
+    python3 verify.py --report --days 14 # 只看最近 14 天
+
+为什么需要: 通用判读规则（模式离散、预计再升等）在三天真实样本上表现参差，
+但**站级偏差稳定得多** —— 重庆连续三天被报低 2-3 度、青岛连续偏高 1-2 度。
+这类偏差人工记不住也记不准，交给脚本每天累计。
+
+攒够两周后，如果某站某档的平均偏差稳定偏离 0（且置信区间不含 0），
+就可以考虑在输出层加分站常数订正，或者把它作为重训的信号。
+
+数据来源:
+  临近  — cron_hourly.log / pred_YYYY-MM-DD.log 里的逐档预报
+  D+1/2 — cron_daily.log / pred_mos_YYYY-MM-DD.log
+  实况  — cn.sqlite 的 obs 表（按北京时日界取当日最高）
+"""
+
+from __future__ import annotations
+
+import argparse
+import glob
+import math
+import os
+import re
+import sqlite3
+import sys
+from datetime import datetime, timedelta, timezone
+
+CST = timezone(timedelta(hours=8))
+NAMES = {"ZBAA": "北京首都", "ZSPD": "上海浦东", "ZGGG": "广州白云",
+         "ZGSZ": "深圳宝安", "ZUUU": "成都双流", "ZUCK": "重庆江北",
+         "ZHHH": "武汉天河", "ZSQD": "青岛胶东"}
+
+DDL = """
+CREATE TABLE IF NOT EXISTS fc (
+    station TEXT, target_date TEXT,
+    kind TEXT,            -- 'nowcast' 或 'mos'
+    slot INTEGER,         -- 临近=截止时刻; MOS=lead
+    pred INTEGER, p90 INTEGER, so_far REAL,
+    spread REAL, clim REAL, rise REAL,
+    obs REAL,
+    PRIMARY KEY (station, target_date, kind, slot));
+"""
+
+
+def parse_nowcast(paths):
+    """临近日志。同一 (站,日,档) 出现多次时取最后一次（补跑覆盖原轮）。"""
+    out = {}
+    for p in paths:
+        txt = open(p, encoding="utf-8", errors="replace").read()
+        # 块头行尾也有 10 个 #，所以必须行首锚定，否则块内容会被截断
+        for m in re.finditer(
+                r'^#{10} (\d{4}-\d{2}-\d{2}) \S+\s+(\d+) 时起报.*?$(.*?)(?=^#{10}|\Z)',
+                txt, re.S | re.M):
+            day, slot, body = m.group(1), int(m.group(2)), m.group(3)
+            for r in re.finditer(
+                    r'^  (Z\w{3})\s+\S+\s+(\d+)\s+(\d+)\s+(\d+)\s+([-+][\d.]+)\s*(.*)$',
+                    body, re.M):
+                note = r.group(6)
+                g = lambda pat: (float(re.search(pat, note).group(1))
+                                 if re.search(pat, note) else None)
+                out[(r.group(1), day, "nowcast", slot)] = dict(
+                    pred=int(r.group(2)), p90=int(r.group(3)),
+                    so_far=float(r.group(4)), rise=float(r.group(5)),
+                    spread=g(r'模式离散 ([\d.]+)'), clim=g(r'气候升温 ([\d.]+)'))
+    return out
+
+
+def parse_mos(paths):
+    out = {}
+    for p in paths:
+        txt = open(p, encoding="utf-8", errors="replace").read()
+        for m in re.finditer(r'目标日 (\d{4}-\d{2}-\d{2})（北京时）(.*?)(?=目标日 |\Z)',
+                             txt, re.S):
+            day, seg = m.group(1), m.group(2)
+            for mm in re.finditer(r'── D\+(\d)（.*?\n(.*?)(?=── D\+|\Z)', seg, re.S):
+                lead, body = int(mm.group(1)), mm.group(2)
+                for r in re.finditer(r'^  (Z\w{3})\s+\S+\s+(\d+)\s+([\d.]+)',
+                                     body, re.M):
+                    out[(r.group(1), day, "mos", lead)] = dict(
+                        pred=int(r.group(2)), p90=None, so_far=None,
+                        rise=None, spread=None, clim=None)
+    return out
+
+
+def cmd_collect(args):
+    files_n = sorted(glob.glob("cron_hourly.log") + glob.glob("pred_2*.log"))
+    files_m = sorted(glob.glob("cron_daily.log") + glob.glob("pred_mos_2*.log"))
+    recs = {}
+    recs.update(parse_nowcast(files_n))
+    recs.update(parse_mos(files_m))
+    if not recs:
+        print("没解析到任何预报。确认日志文件存在。", file=sys.stderr)
+        return 1
+
+    oc = sqlite3.connect(args.obs_db)
+    obs = {(s, d): v for s, d, v in oc.execute(
+        "SELECT station, local_date, MAX(temp_c) FROM obs GROUP BY 1, 2")}
+    # 只回填「已经过完」的日子，当天还在走的不算
+    today = datetime.now(CST).date().isoformat()
+    oc.close()
+
+    conn = sqlite3.connect(args.db)
+    conn.executescript(DDL)
+    n = pend = 0
+    for (stn, day, kind, slot), v in recs.items():
+        o = obs.get((stn, day)) if day < today else None
+        if o is None:
+            pend += 1
+        conn.execute(
+            "INSERT OR REPLACE INTO fc VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (stn, day, kind, slot, v["pred"], v["p90"], v["so_far"],
+             v["spread"], v["clim"], v["rise"], o))
+        n += 1
+    conn.commit()
+    tot = conn.execute("SELECT COUNT(*), SUM(obs IS NOT NULL) FROM fc").fetchone()
+    conn.close()
+    print(f"入库 {n} 条（其中 {pend} 条当日未结束、暂无实况）")
+    print(f"累计 {tot[0]} 条，已配实况 {tot[1]} 条 -> {args.db}")
+    return 0
+
+
+def cmd_report(args):
+    if not os.path.exists(args.db):
+        print(f"还没有 {args.db}，先跑一次 verify.py", file=sys.stderr)
+        return 1
+    conn = sqlite3.connect(args.db)
+    conn.executescript(DDL)
+    cut = (datetime.now(CST).date() - timedelta(days=args.days)).isoformat()
+    rows = list(conn.execute(
+        "SELECT station, kind, slot, pred, obs FROM fc "
+        "WHERE obs IS NOT NULL AND target_date >= ?", (cut,)))
+    days = [r[0] for r in conn.execute(
+        "SELECT DISTINCT target_date FROM fc WHERE obs IS NOT NULL "
+        "AND target_date >= ? ORDER BY 1", (cut,))]
+    conn.close()
+    if not rows:
+        print("还没有配上实况的样本。当天的要等第二天才会回填。")
+        return 0
+    print(f"验证期 {days[0]} ~ {days[-1]}（{len(days)} 天），共 {len(rows)} 条\n")
+
+    import collections
+    g = collections.defaultdict(list)
+    for stn, kind, slot, pred, obs in rows:
+        g[(stn, kind, slot)].append(pred - obs)
+
+    for kind, label in (("nowcast", "临近（按截止时刻）"), ("mos", "MOS（按时效）")):
+        slots = sorted({k[2] for k in g if k[1] == kind})
+        if not slots:
+            continue
+        print(f"── {label}   表内为平均偏差 ME（正=偏高），括号内 MAE")
+        print(f"  {'站点':<14}" + "".join(f"{('D+' if kind=='mos' else '')}{s}{'' if kind=='mos' else '时':>0}"
+                                          .rjust(13) for s in slots))
+        for stn in sorted(NAMES):
+            line = f"  {stn} {NAMES[stn]:<9}"
+            for s in slots:
+                e = g.get((stn, kind, s))
+                if not e:
+                    line += f"{'--':>13}"
+                    continue
+                me = sum(e) / len(e)
+                mae = sum(abs(x) for x in e) / len(e)
+                line += f"{me:>+7.2f}({mae:.2f})"
+            print(line)
+        # 站级总偏差 + 显著性（t 检验的粗略版: |ME| > 2*SE 即认为稳定）
+        print(f"\n  站级合计（跨全部档）")
+        print(f"  {'站点':<14}{'n':>5}{'ME':>8}{'MAE':>8}{'2×标准误':>10}  判定")
+        for stn in sorted(NAMES):
+            e = [x for k, v in g.items() if k[0] == stn and k[1] == kind for x in v]
+            if len(e) < 5:
+                continue
+            me = sum(e) / len(e)
+            sd = math.sqrt(sum((x - me) ** 2 for x in e) / max(1, len(e) - 1))
+            se2 = 2 * sd / math.sqrt(len(e))
+            verdict = ("稳定偏高" if me > se2 else "稳定偏低" if me < -se2
+                       else "无稳定偏差")
+            print(f"  {stn} {NAMES[stn]:<9}{len(e):>5}{me:>+8.2f}"
+                  f"{sum(abs(x) for x in e)/len(e):>8.2f}{se2:>10.2f}  {verdict}")
+        print()
+    print("注意: 同一天同一站的多个档高度相关，标准误偏乐观。"
+          "有效样本约等于「天数×站数」，两周以上再下结论。")
+    return 0
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--db", default="verify.sqlite")
+    ap.add_argument("--obs-db", default="cn.sqlite")
+    ap.add_argument("--report", action="store_true")
+    ap.add_argument("--days", type=int, default=30)
+    args = ap.parse_args()
+    return cmd_report(args) if args.report else cmd_collect(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

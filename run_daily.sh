@@ -91,6 +91,12 @@ PY
     echo
     python3 taf_compare.py --pred pred_mos.csv \
         --db "${PLOYGON_TAF_DB:-taf_compare.sqlite}" || true
+
+    # 把当天的「预报 vs 实况」累计入库。23:59 跑，当天实况已定型。
+    # 目的是找站级系统性偏差 —— 通用判读规则在小样本上表现参差，
+    # 但站级偏差稳定得多（重庆连续偏低、青岛连续偏高）
+    echo
+    python3 verify.py --db "${PLOYGON_VERIFY_DB:-verify.sqlite}" || true
 } 2>&1 | tee -a "$LOG"
 
 echo "已追加到 $LOG" >&2
