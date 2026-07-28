@@ -127,13 +127,30 @@ def _rh(t, td):
     return max(0.0, min(100.0, 100.0 * es(td) / es(t)))
 
 
-def from_awc(stations, hours=30):
-    """实时 METAR。单位换算: 风速节->米/秒；气压若是英寸汞柱则换算成百帕。"""
+def from_awc(stations, hours=30, retries=3):
+    """实时 METAR。单位换算: 风速节->米/秒；气压若是英寸汞柱则换算成百帕。
+
+    AWC 会间歇性 504（实测 2026-07-28 14 时那轮），所以要重试。
+    重试用完仍失败时抛出，由调用方决定怎么降级。
+    """
+    import time as _time
     url = AWC + "?" + urllib.parse.urlencode(
         {"ids": ",".join(stations), "format": "json", "hours": str(hours)})
     req = urllib.request.Request(url, headers={"User-Agent": UA})
-    with urllib.request.urlopen(req, timeout=60) as r:
-        data = json.loads(r.read().decode("utf-8", "replace"))
+    last = None
+    for a in range(1, retries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                data = json.loads(r.read().decode("utf-8", "replace"))
+            break
+        except Exception as e:
+            last = e
+            print(f"[warn] AWC 取数失败({e})，{3*a}s 后重试 {a}/{retries}",
+                  file=sys.stderr)
+            if a < retries:
+                _time.sleep(3 * a)
+    else:
+        raise last
     recs = data.get("data", data) if isinstance(data, dict) else data
 
     days, inhg = defaultdict(dict), False
@@ -239,8 +256,20 @@ def main() -> int:
         m2 = fetch_m2(stations, tgt, mdls)
 
     if args.live:
-        days = from_awc(stations)
+        # 兜底自己也要有兜底: AWC 挂了就退回读库。库里可能是陈旧实况，
+        # 但 morning() 会判断够不够，好过整轮崩掉不出预报
+        src = "实时 AWC"
+        try:
+            days = from_awc(stations)
+        except Exception as e:
+            src = f"{args.db}（AWC 不可用）"
+            print(f"[warn] AWC 不可用（{e}），退回读 {args.db} 的已有实况",
+                  file=sys.stderr)
+            days = from_db(args.db, args.table, stations,
+                           {(tgt - timedelta(days=k)).isoformat()
+                            for k in range(11)})
     else:
+        src = args.db
         # 多取 10 天: rise_anom_3d/7d 要回看前几个可用日的实际升幅
         days = from_db(args.db, args.table, stations,
                        {(tgt - timedelta(days=k)).isoformat() for k in range(11)})
@@ -256,7 +285,7 @@ def main() -> int:
 
     print(f"\n{'='*70}")
     print(f"临近预报  目标日 {tgt}  截止 {cutoff:02d} 时（北京时）  "
-          f"{'实时 AWC' if args.live else 'cn.sqlite'}")
+          f"{src}")
     p90_col = f"{'不排除':>8}" if args.p90 else ""
     print(f"\n  {'站点':<14}{'预报':>7}{p90_col}{'已达':>7}{'预计再升':>10}   备注")
 
