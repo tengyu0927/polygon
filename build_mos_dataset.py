@@ -237,6 +237,25 @@ def daily_features(conn, lead) -> dict:
             f[f"{var}_peakmean"] = sum(peak) / len(peak) if peak else None
             if var == "temperature_2m":
                 f["t2m_range"] = max(allv) - min(allv)
+                # 午后廓线。之前只留 max 和 10-19 时均值，等于把模式给的 24 个
+                # 小时值压成两个数 —— 峰值出现在几点、午后是继续升还是很快回落，
+                # 这些信息全丢了。而晚见顶正是当前最大的弱点
+                # （重庆 46% 的日子 16-17 时才见顶，站级 ME -1.40）
+                by_h = {}
+                for h, v in pts:
+                    by_h[h] = max(v, by_h.get(h, -99))
+                mx = max(allv)
+                pk = [h for h, v in by_h.items() if v >= mx - 1e-9]
+                f["t2m_peak_h"] = min(pk) if pk else None
+                a = by_h.get(12)
+                b = by_h.get(16)
+                # 12->16 时的升温速率: 正得多说明午后还在猛升、峰值偏晚
+                f["t2m_slope_pm"] = None if (a is None or b is None) else (b - a) / 4
+                late = [v for h, v in by_h.items() if 16 <= h <= 18]
+                pm = f.get("temperature_2m_peakmean")
+                # 傍晚相对午后均值: 正说明高温维持到傍晚
+                f["t2m_late_minus_peak"] = (None if (not late or pm is None)
+                                            else sum(late) / len(late) - pm)
         if f.get("temperature_2m_max") is not None:
             out[key] = f
     return out

@@ -74,10 +74,10 @@ def load_hourly(db, table="obs", min_peak=6):
     tcol = "valid_time_gmt" if "valid_time_gmt" in cols else "obs_time_utc"
     get = lambda c: c if c in cols else "NULL"
     q = (f"SELECT station, {tcol}, temp_c, {get('dewp_c')}, {get('rh')}, "
-         f"{get('wspd_ms')}, {get('pres_hpa')}, {get('skyc1')}, {get('wxcodes')} "
-         f"FROM {table} WHERE temp_c IS NOT NULL")
+         f"{get('wspd_ms')}, {get('pres_hpa')}, {get('skyc1')}, {get('wxcodes')}, "
+         f"{get('drct')} FROM {table} WHERE temp_c IS NOT NULL")
     days = defaultdict(dict)
-    for stn, ts, t, dp, rh, ws, pr, sk, wx in conn.execute(q):
+    for stn, ts, t, dp, rh, ws, pr, sk, wx, dr in conn.execute(q):
         try:
             if tcol == "valid_time_gmt":
                 dt = datetime.fromtimestamp(int(ts), UTC).astimezone(CST)
@@ -98,7 +98,8 @@ def load_hourly(db, table="obs", min_peak=6):
                 "rh": None if rh is None else float(rh),
                 "wspd": None if ws is None else float(ws),
                 "pres": None if pr is None else float(pr),
-                "cld": cloud_frac(sk), "ts": tsf, "ra": raf, "obsc": obf}
+                "cld": cloud_frac(sk), "ts": tsf, "ra": raf, "obsc": obf,
+                "drct": None if dr is None else float(dr)}
     conn.close()
     # 峰值时段观测数达标还不够: 「今天」下午训练时 10-16 时已有 7 个小时、
     # 能通过 min_peak，但 tmax 仍是截断值。要求当天已过峰值时段末端才收。
@@ -112,6 +113,7 @@ def load_hourly(db, table="obs", min_peak=6):
 
 FEATS = ["max_so_far", "t_now", "trend_1h", "trend_2h", "trend_3h", "rise_since_06",
          "dewp_now", "dpd_now", "rh_now", "wspd_now", "pres_now", "pres_tend_3h",
+
          "cld_now", "cld_mean_am", "ts_am", "ra_am", "obsc_am",
          "prev_tmax", "prev_rise", "clim_rise", "clim_peak_h", "hours_to_peak",
          "rise_anom_3d", "rise_anom_7d",
@@ -134,6 +136,15 @@ NWP_COLS = {
     "nwp_wind_peak": "wind_speed_10m_peakmean",
     "nwp_gust_max": "wind_gusts_10m_max",
 }
+# 试过没赢: 模式的午后温度廓线（峰值时刻 t2m_peak_h、12->16 时升温速率
+# t2m_slope_pm、傍晚相对午后均值 t2m_late_minus_peak，均已在
+# build_mos_dataset.daily_features 里算好，csv 里有，只是不进特征表）。
+# 11/13 时 ΔMAE +0.007 / +0.001，均不显著；**目标人群反而更差** ——
+# 16 时后见顶的日子 11 时档 +0.078、13 时档 +0.010，重庆 MAE 纹丝不动。
+# 根因: 假设「模式知道今天几点见顶，只是被聚合掉了」不成立。25km 分辨率下
+# 模式对盆地站的午后廓线本身就不准，用不准的峰值时刻去预测另一个量只是引噪声。
+# 与「用上午观测预报见顶时刻」那次失败同源: 不是信息被压掉了，是源头就不可靠。
+# 要重测把下面三行加回 NWP_COLS 即可。
 # 试过没赢: 各模式自己的 recent_bias（借鉴 PolyWeather 的 DEB）。
 # 10/11/12 时 ΔMAE -0.021 / +0.001 / -0.005，全部无显著差异。
 # 原因是临近路线已有 max_so_far（当天实测），对预报的锚定远强于模式 7 天偏差 ——
@@ -235,6 +246,46 @@ def morning(hrs, cutoff):
     return o
 
 
+def _wdir_feats(now, am_list):
+    """风向 -> sin/cos。另给上午平均风向与「风向转了多少」(0-180 度)。
+
+    **试过没赢，不在 FEATS 里**（要重测就把 wdir_* 五项加回去）。
+    信号是真的: 深圳控制住上午云量后，离岸风(W/N)比向岸风(S/SE)仍多升 0.76℃
+    （n=307 vs 2042），成都 SW 比 NE 多 1.5℃。但 11/13 时 ΔMAE 0.000 / -0.004，
+    均不显著。三个原因叠加:
+      1. 那 0.76℃ 是全天升幅的差异，而模型预报的是「剩余升幅」，11 时已升大半
+      2. 样本极不平衡 —— 深圳离岸风 307 天 vs 向岸 2042 天，而带 NWP 的训练集
+         每站只有约 750 条，稀有类别学不出稳定系数
+      3. 只对个别站有效: 深圳 11 时 -0.055，上海 +0.044，成都/重庆纹丝不动
+    """
+    import math as _m
+    out = {"wdir_sin": None, "wdir_cos": None, "wdir_sin_am": None,
+           "wdir_cos_am": None, "wdir_shift": None}
+    if now is not None:
+        r = _m.radians(now)
+        out["wdir_sin"], out["wdir_cos"] = _m.sin(r), _m.cos(r)
+    vals = [v for v in am_list if v is not None]
+    if vals:
+        # 角度平均要走向量平均，直接算术平均会在 0/360 边界翻车
+        sx = sum(_m.sin(_m.radians(v)) for v in vals) / len(vals)
+        cx = sum(_m.cos(_m.radians(v)) for v in vals) / len(vals)
+        out["wdir_sin_am"], out["wdir_cos_am"] = sx, cx
+        if now is not None:
+            am_deg = _m.degrees(_m.atan2(sx, cx)) % 360
+            d = abs(now - am_deg) % 360
+            out["wdir_shift"] = min(d, 360 - d)
+    return out
+
+
+def _tend(o, lh, key, back=3):
+    """某要素最近 back 小时的变化量。缺任一端就返回 None。"""
+    a, b = o.get(lh), o.get(lh - back)
+    if a is None or b is None:
+        return None
+    x, y = a.get(key), b.get(key)
+    return None if (x is None or y is None) else x - y
+
+
 def build_feats(o, cutoff, prev, clim_r, clim_p, doy, nwp):
     lh = max(o)
     cur = o[lh]
@@ -259,6 +310,18 @@ def build_feats(o, cutoff, prev, clim_r, clim_p, doy, nwp):
                                   or o[lh - 3]["pres"] is None)
                          else cur["pres"] - o[lh - 3]["pres"]),
         "cld_now": cur["cld"],
+        # 上午各要素的 3 小时变化率。**试过没赢，不在 FEATS 里**（要重测就把
+        # dewp_tend_3h 等加回去）。全量 6 项: 11/13 时 ΔMAE -0.010 / -0.012；
+        # 只留露点+云量两项: -0.003 / -0.001。都不显著且方向偏坏。
+        # 说明这些趋势的信息已被 trend_1h/2h/3h（温度自身趋势）和 cld_mean_am
+        # 覆盖 —— 上午温度怎么走，本来就把水汽和云的影响都体现进去了
+        **{f"{k}_tend_3h": _tend(o, lh, k) for k in
+           ("dewp", "rh", "wspd", "cld")},
+        "dpd_tend_3h": (None if (diff(3) is None or _tend(o, lh, "dewp") is None)
+                        else diff(3) - _tend(o, lh, "dewp")),
+        "dewp_mean_am": (sum(v["dewp"] for v in am if v["dewp"] is not None)
+                         / max(1, sum(1 for v in am if v["dewp"] is not None))
+                         if any(v["dewp"] is not None for v in am) else None),
         "cld_mean_am": (sum(cl) / len(cl)) if cl else None,
         "ts_am": max((v["ts"] for v in am), default=0.0),
         "ra_am": max((v["ra"] for v in am), default=0.0),
