@@ -124,10 +124,17 @@ def fit_block(tr, names, alphas, val_days=90, peak=False, cutoff=12):
             if mae < best[1]:
                 best = (a, mae, m)
         q90 = N.fit_quantile(rows_tr, 0.90, best[0], med, names)
+        # 方差膨胀用的中心: 训练集上预报升幅的均值。绕它做 pred' = mu + c*(pred-mu)，
+        # 双向调整 —— 大升幅往上推、零升幅往下压，不像换 P90 那样单向抬高
+        Xtr_, _ = N.matrix(rows_tr, med, names)
+        ptr = N.pred_hurdle(N.fit_hurdle(rows_tr, [best[0]], med, names), Xtr_) \
+            if N.fit_hurdle(rows_tr, [best[0]], med, names) else \
+            [max(0.0, v) for v in T.ridge_pred(best[2], Xtr_)]
+        rise_mu = sum(ptr) / len(ptr) if ptr else 0.0
         return {"median": med, "ridge": best[2], "alpha": best[0],
                 "hurdle": N.fit_hurdle(rows_tr, [best[0]], med, names),
                 "ordinal": N.fit_ordinal(rows_tr, best[0], med, names),
-                "q90": q90}
+                "q90": q90, "rise_mu": rise_mu}
 
     # 第一段: 见顶时刻辅助模型。只用训练集拟合，再把预报值注入全部行的特征
     base_names = [n for n in names if n not in PEAK_FEATS]
@@ -269,6 +276,10 @@ def main() -> int:
                     default=[1, 3, 10, 30, 100, 300])
     ap.add_argument("--nwp-csv2", nargs="+", default=[],
                     help="追加模式的 mos 格式 csv（可多个），加多模式与集合离散度特征")
+    ap.add_argument("--inflate", type=float, default=1.0,
+                    help="方差膨胀系数。**实测未采用**: 校准确实改善"
+                         "（>=3度升幅欠报 0.90->0.66），但晚见顶日 MAE 反而从"
+                         "0.868 涨到 0.892、总 MAE 0.583->0.605。1.0=不启用")
     ap.add_argument("--peak-feat", action="store_true",
                     help="加「预报见顶时刻」辅助模型的输出当特征（实验）")
     ap.add_argument("--blend-mos", action="store_true",
@@ -393,6 +404,10 @@ def main() -> int:
                 if m.get("peak"):
                     add_peak_feats(sub, *m["peak"])
                 mean_r = predict(m, sub, names, not args.no_hurdle)
+                if args.inflate != 1.0:
+                    mu = m.get("rise_mu", 0.0)
+                    mean_r = [max(0.0, mu + args.inflate * (v - mu))
+                              for v in mean_r]
                 pmf = rise_pmf(m, sub, names)
                 mode_r = decide(pmf, 0) if pmf else mean_r
                 win_r = decide(pmf, 1) if pmf else mean_r
