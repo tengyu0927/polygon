@@ -233,10 +233,21 @@ def mos_walkforward(mos_rows, alphas, step=30, min_train=400):
     return out
 
 
-def predict(m, rows, names, hurdle):
+def predict(m, rows, names, hurdle, thresh=0.0):
+    """thresh > 0 时启用「硬判定见顶」: P(会升) 低于阈值就直接输出 0。
+
+    动机: 两段式现在输出 P(会升) × E[升幅|会升]，即使 P=0.3 也会给 0.6 度，
+    **永远不会真正判定见顶**。实测「已见顶判定」准确率只有 75-83%，
+    且漏判是误判的 2-3 倍（12 时 113 vs 43）—— 这种不对称说明是阈值问题，
+    不是信息不足。完美判定的上界: 12 时 MAE 0.610 -> 0.430。
+    """
     X, _ = N.matrix(rows, m["median"], names)
     if hurdle and m["hurdle"]:
-        return N.pred_hurdle(m["hurdle"], X)
+        if thresh <= 0:
+            return N.pred_hurdle(m["hurdle"], X)
+        pp = [min(1.0, max(0.0, v)) for v in T.ridge_pred(m["hurdle"]["cls"], X)]
+        rr = T.ridge_pred(m["hurdle"]["reg"], X)
+        return [0.0 if p < thresh else p * max(0.0, r) for p, r in zip(pp, rr)]
     return [max(0.0, v) for v in T.ridge_pred(m["ridge"], X)]
 
 
@@ -276,6 +287,8 @@ def main() -> int:
                     default=[1, 3, 10, 30, 100, 300])
     ap.add_argument("--nwp-csv2", nargs="+", default=[],
                     help="追加模式的 mos 格式 csv（可多个），加多模式与集合离散度特征")
+    ap.add_argument("--hurdle-thresh", type=float, default=0.0,
+                    help="两段式硬判定阈值: P(会升) 低于它就直接输出 0（已见顶）")
     ap.add_argument("--inflate", type=float, default=1.0,
                     help="方差膨胀系数。**实测未采用**: 校准确实改善"
                          "（>=3度升幅欠报 0.90->0.66），但晚见顶日 MAE 反而从"
@@ -403,7 +416,8 @@ def main() -> int:
                 m = per.get(stn, pooled)
                 if m.get("peak"):
                     add_peak_feats(sub, *m["peak"])
-                mean_r = predict(m, sub, names, not args.no_hurdle)
+                mean_r = predict(m, sub, names, not args.no_hurdle,
+                                 args.hurdle_thresh)
                 if args.inflate != 1.0:
                     mu = m.get("rise_mu", 0.0)
                     mean_r = [max(0.0, mu + args.inflate * (v - mu))
