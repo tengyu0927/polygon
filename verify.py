@@ -183,9 +183,58 @@ def cmd_report(args):
                   f"{sum(abs(x) for x in e)/len(e):>8.2f}{se2:>10.2f}  {verdict}")
         print()
     _blend_report(args)
+    _slot_report(args)
     print("注意: 同一天同一站的多个档高度相关，标准误偏乐观。"
           "有效样本约等于「天数×站数」，两周以上再下结论。")
     return 0
+
+
+# 日常判读规则: 这两个站看「不排除」，其余看「预报」。
+# 依据是它们的 w 在每次留一验证里都稳定 >=0.5（见 _blend_report），
+# 物理上对应「晚见顶站」—— 重庆 46%、武汉 31% 的日子 16-17 时才见顶
+LATE_PEAK = {"ZUCK", "ZHHH"}
+
+
+def _slot_report(args):
+    """按起报时刻看命中率，回答「该主要盯哪一轮」。"""
+    conn = sqlite3.connect(args.db)
+    rows = list(conn.execute(
+        "SELECT station, target_date, slot, pred, p90, obs FROM fc "
+        "WHERE kind='nowcast' AND obs IS NOT NULL AND p90 IS NOT NULL"))
+    conn.close()
+    if len(rows) < 40:
+        return
+    import collections
+    val = lambda s, p, q: q if s in LATE_PEAK else p
+    G = collections.defaultdict(list)
+    for s, d, slot, p, q, o in rows:
+        G[(d, slot)].append(abs(val(s, p, q) - o))
+    days = sorted({d for d, _ in G})
+    print(f"\n── 按起报时刻（规则: {'/'.join(sorted(LATE_PEAK))} 看不排除，其余看预报）")
+    print(f"  {'起报':<7}{'天数':>5}{'平均命中站数':>13}{'8站全对':>10}{'8站全±1℃':>11}{'MAE':>8}")
+    for slot in range(9, 16):
+        ds = [d for d in days if len(G.get((d, slot), [])) >= 8]
+        if not ds:
+            continue
+        avg = sum(sum(1 for x in G[(d, slot)] if x == 0) for d in ds) / len(ds)
+        allhit = sum(1 for d in ds if all(x == 0 for x in G[(d, slot)]))
+        allw1 = sum(1 for d in ds if all(x <= 1 for x in G[(d, slot)]))
+        mae = sum(x for d in ds for x in G[(d, slot)]) / sum(len(G[(d, slot)]) for d in ds)
+        print(f"  {slot} 时{'':<3}{len(ds):>5}{avg:>11.1f}/8{allhit:>7}/{len(ds):<3}"
+              f"{allw1:>8}/{len(ds):<3}{mae:>8.3f}")
+
+    # 待验观察: 晚见顶站在 15 时可能该改看「预报」（那时多半已见顶，
+    # 用不排除会多报 1 度）。2026-07-30 首次出现，样本太少，先跟踪
+    print(f"\n  晚见顶站在各时次: 用「不排除」 vs 用「预报」哪个好")
+    print(f"  {'起报':<7}{'n':>4}{'用不排除MAE':>13}{'用预报MAE':>12}")
+    for slot in range(9, 16):
+        sub = [r for r in rows if r[2] == slot and r[0] in LATE_PEAK]
+        if len(sub) < 4:
+            continue
+        a = sum(abs(r[4] - r[5]) for r in sub) / len(sub)
+        b = sum(abs(r[3] - r[5]) for r in sub) / len(sub)
+        mark = "  <- 预报更好" if b < a else ""
+        print(f"  {slot} 时{'':<3}{len(sub):>4}{a:>13.3f}{b:>12.3f}{mark}")
 
 
 def _blend_report(args):
