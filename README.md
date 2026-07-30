@@ -1338,3 +1338,134 @@ python3 check_consistency.py --skip-mos --skip-scripts   # 只查特征与契约
 `backtest_nowcast.py` 与 `train_nowcast.py` 选 alpha 的验证窗口不同
 （回测用训练期末尾 90 天，生产用日期分位 0.70~0.85）。两者都合理，
 但意味着回测数字与生产模型不会逐条相等。回测是更保守的估计口径，保持现状。
+
+---
+
+## 附四、将来要加其他机场站点时，时区改造清单
+
+**当前所有逻辑都绑死在北京时（UTC+8）**。要加台北、东京、首尔、巴黎、伦敦、
+亚特兰大这类跨时区机场，下面 34 处必须逐一处理 —— **漏一处就是静默错误**
+（比如峰值窗口取了错的时段），这类错误不报警、只体现为精度慢慢变差。
+
+### A. 时区常量（11 处）
+
+```
+iem_multi.py:565         datetime.now(timezone(timedelta(hours=8))).year
+build_mos_dataset.py:35  CST = timezone(timedelta(hours=8))
+train_nowcast.py:41      CST
+predict_nowcast.py:58    CST
+predict_mos.py:36        CST
+taf_bias.py:35           CST
+taf_compare.py:36        CST
+pair_taf_model.py:23     CST
+nowcast_potential.py:30  CST
+live_tmax.py:55          CN_TZ
+verify.py:34             CST
+```
+
+### B. Open-Meteo 的 `timezone` 参数（4 处）
+
+```
+build_mos_dataset.py:100 / 140 / 160    "timezone": "Asia/Shanghai"
+predict_mos.py:51                       "timezone": "Asia/Shanghai"
+```
+
+改成按站传各自的 IANA 时区名。**注意夏令时** —— 巴黎、伦敦、亚特兰大都有，
+固定偏移量不够用，必须用 IANA 名让 API 自己处理。
+
+### C. 午后峰值时段（5 处）
+
+```
+build_mos_dataset.py:51  PEAK_H0, PEAK_H1 = 10, 19
+train_nowcast.py:51      同上
+taf_bias.py:43           同上
+taf_compare.py:37        同上
+pair_taf_model.py:24     同上
+```
+
+这是**本地时**的 10-19 时。跨时区时语义不变（仍是本地 10-19 时），
+但取数时的换算基准要跟着变。
+
+### D. 数据库 schema
+
+```
+build_mos_dataset.py:56  PRIMARY KEY (station, valid_cst, var, lead)
+```
+
+`valid_cst` 这个字段名写死了"CST"。存的是本地时字符串，
+多时区下含义变成"各站自己的本地时"，**字段名会误导人**，建议改名 `valid_local`。
+
+`cn.sqlite` 的 `obs.local_date` 已经是按 `stations.tz_offset_h` 分站算的，
+**这部分不用改**（见下）。
+
+### E. shell 脚本（9 处）
+
+```
+run_hourly.sh / run_daily.sh    TZ=Asia/Shanghai date +...
+```
+
+更麻烦的是 **cron 调度本身**：现在 `15 9-15 * * *` 是北京时 9-15 点。
+巴黎的 13 时 = 北京时 20 时，**必须按站分组排不同的 cron 行**，
+或者改成每小时跑一次、脚本内部判断哪些站到点了。
+
+### F. 隐含北京时的档位约定
+
+```
+run_hourly.sh:49   "只支持 9-15 时"
+run_hourly.sh:55   if (( HOUR <= 13 ))    # 9-13 用六模式，14/15 用纯实况
+bootstrap.sh:86    --cutoffs 9 10 11 12 13
+```
+
+「9-15 时」这个范围是针对中国站的日变化选的。其他站要各自确定
+（比如高纬度的伦敦夏季日落晚，峰值时段可能整体后移）。
+
+### 好消息：最难的一块已经做好了
+
+`iem_multi.py` **已经支持分站时区** —— `stations` 表有 `tz_offset_h` 字段，
+日聚合 SQL 按站取该字段算日界：
+
+```sql
+date(datetime(o.valid_time_gmt + CAST(COALESCE(s.tz_offset_h,8)*3600 AS INTEGER) ...))
+```
+
+IEM 的 `--network` 换成 `RC__ASOS`（台湾）、`JP__ASOS`（日本）等即可拉数据，
+Open-Meteo 的六个模式对欧美日韩的覆盖只会比中国区更好。
+
+### 关键风险：MOS 会互相影响，临近不会（已实测）
+
+用 4 站训练 vs 8 站训练，对比那 4 站的预报：
+
+| 路线 | 影响 |
+|---|---|
+| **MOS（D+1/D+2）** | **16% 的预报发生变化，幅度中位数 1 度** |
+| 临近（9-15 时） | **完全不受影响** |
+
+原因：MOS 当前用 `blend`（合并模型 + 站点哑变量），所有站共享一套权重；
+而临近是**分站独立训练**的（`trs = [r for r in tr if r["stn"] == stn]`），
+每个站只用自己的数据。
+
+**所以加站前必须先决定 MOS 怎么办**：
+
+1. 强制 `prefer=per_station` —— 分站独立，但 D+1 从 1.00 退到约 1.14
+2. **中国 8 站与新站分成两套独立模型文件** —— 现有精度零损失，代价是维护两套配置
+3. 接受相互影响 —— 不推荐，等于拿现有精度换新站
+
+### 判读规则完全不能移植
+
+「13 时最准」「重庆武汉看不排除」这些是**北京时 + 东亚气候型**下统计出来的：
+
+- 13 时对巴黎、亚特兰大毫无意义
+- 「看不排除」的规则源于那两站晚见顶（46%/31% 的日子 16-17 时见顶），
+  新站要各自统计见顶时刻分布
+- 每个新站都要攒**两周以上**前瞻样本才能定规则
+
+### 建议的推进顺序
+
+1. **先把现有 8 站的规则验完**（`verify.py` 攒够两周）
+2. 再加 **1-2 个东亚站试水**（东京羽田 RJTT / 首尔仁川 RKSI）——
+   时区只差 1 小时、气候型接近，改造成本最低、最容易验证时区改造是否正确
+3. 跑通并稳定后，再考虑欧美站（要处理夏令时、cron 分组这些额外复杂度）
+
+**复杂度会实质性增长**：判读规则从 1 套变 N 套、cron 要按站分组、
+`verify.py` 报表要分区域、一致性检查要覆盖多时区。
+加站前先想清楚多几个站对实际用途的价值是否配得上这些成本。
