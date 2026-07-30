@@ -182,9 +182,76 @@ def cmd_report(args):
             print(f"  {stn} {NAMES[stn]:<9}{len(e):>5}{me:>+8.2f}"
                   f"{sum(abs(x) for x in e)/len(e):>8.2f}{se2:>10.2f}  {verdict}")
         print()
+    _blend_report(args)
     print("注意: 同一天同一站的多个档高度相关，标准误偏乐观。"
           "有效样本约等于「天数×站数」，两周以上再下结论。")
     return 0
+
+
+def _blend_report(args):
+    """「预报 + w×(不排除 − 预报)」的最优 w，并用留一天交叉验证给出诚实估计。
+
+    直接在全部数据上选 w 再在同一批数据上报效果 = 过拟合。
+    实测差别很大: 同批数据上重庆「改善 0.958」，留一天验证只剩 +0.05 且不稳定。
+    """
+    import math
+    conn = sqlite3.connect(args.db)
+    rows = list(conn.execute(
+        "SELECT station, slot, pred, p90, obs, target_date FROM fc "
+        "WHERE kind='nowcast' AND obs IS NOT NULL AND p90 IS NOT NULL"))
+    conn.close()
+    if len(rows) < 40:
+        return
+    days = sorted({r[5] for r in rows})
+    mean = lambda v: sum(v) / len(v)
+
+    def fit_w(sub):
+        best = (9e9, 0.0)
+        for i in range(11):
+            w = i / 10
+            m = mean([abs(round(p + w * (q - p)) - o) for _, _, p, q, o, _ in sub])
+            if m < best[0]:
+                best = (m, w)
+        return best[1]
+
+    print(f"\n── 混合权重 w: 最终值 = 预报 + w×(不排除 − 预报)")
+    print(f"  {'站点':<14}{'n':>5}{'全量拟合w':>11}" +
+          "".join(f"{'留出'+d[5:]:>9}" for d in days))
+    stable = []
+    for stn in sorted(NAMES):
+        sub = [r for r in rows if r[0] == stn]
+        if len(sub) < 10:
+            continue
+        line = f"  {stn} {NAMES[stn]:<9}{len(sub):>5}{fit_w(sub):>11.1f}"
+        ws = []
+        for d in days:
+            tr = [r for r in sub if r[5] != d]
+            ws.append(fit_w(tr) if len(tr) >= 8 else 0.0)
+            line += f"{ws[-1]:>9.1f}"
+        print(line)
+        if min(ws) >= 0.5:                 # 每一次留一都稳定要求高 w 才算数
+            stable.append(stn)
+
+    # 留一天交叉验证: 用其余天定 w，在留出那天检验
+    base, new = [], []
+    for d in days:
+        tr = [r for r in rows if r[5] != d]
+        te = [r for r in rows if r[5] == d]
+        W = {}
+        for stn in NAMES:
+            sub = [r for r in tr if r[0] == stn]
+            W[stn] = fit_w(sub) if len(sub) >= 10 else 0.0
+        base += [abs(p - o) for s, _, p, q, o, _ in te]
+        new += [abs(round(p + W[s] * (q - p)) - o) for s, _, p, q, o, _ in te]
+    f1 = lambda v: 100 * sum(1 for x in v if x <= 1) / len(v)
+    print(f"\n  留一天交叉验证（这才是诚实的估计）: n={len(base)}")
+    print(f"    MAE   {mean(base):.3f} -> {mean(new):.3f}   ({mean(base)-mean(new):+.3f})")
+    print(f"    ±1℃   {f1(base):.1f}% -> {f1(new):.1f}%")
+    if stable:
+        print(f"  每次留一都稳定要求 w>=0.5 的站: "
+              f"{'、'.join(NAMES[s] for s in stable)} -> 这些站往「不排除」靠")
+    else:
+        print("  暂无站点在每次留一里都稳定要求高 w，先别用这个公式")
 
 
 def main() -> int:
