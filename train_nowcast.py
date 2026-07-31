@@ -315,6 +315,12 @@ def build_feats(o, cutoff, prev, clim_r, clim_p, doy, nwp):
     f = {
         "max_so_far": msf, "t_now": cur["t"],
         "trend_1h": diff(1), "trend_2h": diff(2), "trend_3h": diff(3),
+        # 上午温度曲线的形态（A/B 测试中，PLOYGON_CURVE=1 打开）。
+        # 现有 trend_1h/2h/3h 只覆盖最近三小时，等于把 6-13 时的曲线压成三个数。
+        # trend_4/5/6h 补足更长的一段，curv_2h 是二阶差分（升温在加速还是减速）。
+        "trend_4h": diff(4), "trend_5h": diff(5), "trend_6h": diff(6),
+        "curv_2h": (None if (diff(1) is None or diff(2) is None)
+                    else diff(1) - (diff(2) - diff(1))),
         "rise_since_06": None if at(6) is None else cur["t"] - at(6),
         "dewp_now": cur["dewp"],
         "dpd_now": None if cur["dewp"] is None else cur["t"] - cur["dewp"],
@@ -419,6 +425,11 @@ def make_samples(days, cutoff, clim_r, clim_p, nwp_map, split_year, m2_maps=()):
 # 距离与相关的相关系数 -0.663，但**不是越近越有用**: 广州-深圳同日相关最高
 # 却毫无增量（离线 P(更好)=8%），因为太近，邻站知道的本站自己也知道。
 # 成都->重庆隔 276km 增量最大（离线 MAE 0.9031->0.8325，P=100%）。
+CURVE = os.environ.get("PLOYGON_CURVE") == "1"
+CURVE_FEATS = ["trend_4h", "trend_5h", "trend_6h", "curv_2h"]
+if CURVE:
+    FEATS.extend(CURVE_FEATS)
+
 XSTN = os.environ.get("PLOYGON_XSTN") == "1"
 XPARTNER = {                       # 站 -> 两个伙伴站（按上面的相关排序取前二）
     "ZBAA": ("ZSQD", "ZSPD"), "ZSPD": ("ZHHH", "ZUCK"),
