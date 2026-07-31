@@ -32,6 +32,7 @@ import argparse
 import csv
 import json
 import math
+import os
 import random
 import sys
 from collections import defaultdict
@@ -73,9 +74,29 @@ def load(path: str) -> list[dict]:
     return rows
 
 
+# 对流/降水因子。数据已在 mos_fcst.sqlite 里（2026-07-31 拉的 106 万条），
+# 但**实测未采用**，见下方 CONV_COLS 注释。这里必须显式排除:
+# 本函数自动识别 csv 列，而 run_daily.sh 每天重建 mos.csv —— 不排除的话，
+# 下次每周重训会把被否决的特征悄悄吃进生产模型。设 PLOYGON_CONV=1 可重测。
+#
+# 实测结果（2025-04-01~2026-07-30 滚动回测，按天配对 bootstrap）:
+#   临近预报 13 时  0.4859 -> 0.4933   P(更好)=1%    显著变差
+#   临近预报 11 时  0.7976 -> 0.8030   P(更好)=10%
+#   D+1/D+2       1.3279 -> 1.3225   P(更好)=79%   不显著
+#   广州(目标站)    0.791  -> 0.800    变差
+# 原因: lifted_index 与 temperature_2m_max 相关 -0.85 近乎共线；
+# cape 与 dew_point_2m_peakmean 相关 0.56。信息已被已有因子覆盖，
+# 加进来只增加方差。样本内 R² 确实从 0.134 涨到 0.169 —— 那是过拟合的样子。
+CONV_COLS = {"precipitation_max", "precipitation_peakmean",
+             "cape_max", "cape_peakmean",
+             "lifted_index_max", "lifted_index_peakmean"}
+
+
 def feature_names(rows: list[dict]) -> list[str]:
     """自动识别数值特征列，排除标识列和真值。"""
     skip = {"station", "date", "lead", "y_tmax"}
+    if os.environ.get("PLOYGON_CONV") != "1":
+        skip |= CONV_COLS
     names = sorted({k for r in rows for k in r} - skip)
     return names
 

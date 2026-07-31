@@ -178,6 +178,22 @@ def check_mos(args):
     rep(bool(ok), "预测端用的架构与 model.json 的 prefer 一致",
       f"prefer={pref}")
 
+    # 被否决的实验特征不能混进上线模型。train_mos.feature_names 自动识别 csv 列，
+    # 而 run_daily.sh 每天重建 mos.csv —— 只要 mos_fcst.sqlite 里有这些变量，
+    # 忘了排除就会在下次重训时静默上线。2026-07-31 的对流因子实验就踩在这条线上。
+    import train_mos as TM
+    import train_nowcast as TN
+    leaked = sorted(TM.CONV_COLS & feats)
+    rep(not leaked, "被否决的对流因子没混进 MOS 上线模型",
+        "" if not leaked else f"泄漏: {leaked}")
+    nc = json.load(open(args.nowcast_model, encoding="utf-8"))
+    nc_feats = {f for blk in nc.values() if isinstance(blk, dict)
+                for f in (blk.get("names") or blk.get("feats") or [])}
+    bad = sorted(f for f in nc_feats if f in
+                 {"nwp_precip_peak", "nwp_precip_max", "nwp_cape_peak", "nwp_li_peak"})
+    rep(not bad, "被否决的对流因子没混进临近预报模型",
+        "" if not bad else f"泄漏: {bad}")
+
 
 # ---------------------------------------------------------------- 入口脚本
 

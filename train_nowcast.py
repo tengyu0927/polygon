@@ -136,6 +136,19 @@ NWP_COLS = {
     "nwp_wind_peak": "wind_speed_10m_peakmean",
     "nwp_gust_max": "wind_gusts_10m_max",
 }
+# 对流/降水因子（A/B 测试中）。设 PLOYGON_CONV=1 打开。
+# 物理动机: 午后雷暴压顶是广州这类站的主要误差来源，而现有 8 个模式变量里
+# 没有任何降水或对流量。previous-runs 端点支持 precipitation / cape /
+# lifted_index（能锁定起报时刻 = 不泄漏），气压层变量则不支持。
+if os.environ.get("PLOYGON_CONV") == "1":
+    NWP_COLS.update({
+        "nwp_precip_peak": "precipitation_peakmean",
+        "nwp_precip_max": "precipitation_max",
+        "nwp_cape_peak": "cape_peakmean",
+        "nwp_li_peak": "lifted_index_peakmean",
+    })
+    FEATS.extend(["nwp_precip_peak", "nwp_precip_max",
+                  "nwp_cape_peak", "nwp_li_peak"])
 # 试过没赢: 模式的午后温度廓线（峰值时刻 t2m_peak_h、12->16 时升温速率
 # t2m_slope_pm、傍晚相对午后均值 t2m_late_minus_peak，均已在
 # build_mos_dataset.daily_features 里算好，csv 里有，只是不进特征表）。
