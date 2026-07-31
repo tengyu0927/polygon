@@ -186,13 +186,20 @@ def check_mos(args):
     leaked = sorted(TM.CONV_COLS & feats)
     rep(not leaked, "被否决的对流因子没混进 MOS 上线模型",
         "" if not leaked else f"泄漏: {leaked}")
-    nc = json.load(open(args.nowcast_model, encoding="utf-8"))
-    nc_feats = {f for blk in nc.values() if isinstance(blk, dict)
-                for f in (blk.get("names") or blk.get("feats") or [])}
-    bad = sorted(f for f in nc_feats if f in
-                 {"nwp_precip_peak", "nwp_precip_max", "nwp_cape_peak", "nwp_li_peak"})
-    rep(not bad, "被否决的对流因子没混进临近预报模型",
-        "" if not bad else f"泄漏: {bad}")
+    # 临近预报侧同理。跨站特征更危险: predict_nowcast.py 根本没有算它们的代码，
+    # 带着 PLOYGON_XSTN=1 训练出来的模型上线后会静默拿到 None。
+    rejected = ({"nwp_precip_peak", "nwp_precip_max", "nwp_cape_peak", "nwp_li_peak"}
+                | set(TN.xstn_feature_names()))
+    for path, tag in ((args.nowcast_model, "临近预报模型"),
+                      (args.nowcast_late_model, "临近预报晚时次模型")):
+        if not os.path.exists(path):
+            continue
+        nc = json.load(open(path, encoding="utf-8"))
+        nc_feats = {f for blk in nc.values() if isinstance(blk, dict)
+                    for f in (blk.get("names") or blk.get("feats") or [])}
+        bad = sorted(rejected & nc_feats)
+        rep(not bad, f"被否决的实验特征没混进{tag}",
+            "" if not bad else f"泄漏: {bad}")
 
 
 # ---------------------------------------------------------------- 入口脚本

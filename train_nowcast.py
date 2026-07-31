@@ -403,7 +403,48 @@ def make_samples(days, cutoff, clim_r, clim_p, nwp_map, split_year, m2_maps=()):
             cr = r["f"]["clim_rise"]
             if cr is not None:
                 hist.append((r["date"], r["rise"] - cr))
+
+    if XSTN:
+        add_xstn_feats(out)
     return out
+
+
+# 跨站特征（A/B 测试中）。设 PLOYGON_XSTN=1 打开。
+#
+# 起报时刻各站的上午观测都已到手，用邻站补充本站信息不泄漏。
+# 伙伴选择用 2010 起夏季日最高温距平的同日相关（30 天滑动中位去季节）:
+#   广州-深圳  98km  0.720      重庆-武汉 736km  0.517
+#   成都-重庆 276km  0.477      上海-武汉 726km  0.368
+#   北京-广州1881km  0.004      北京-上海1100km -0.026
+# 距离与相关的相关系数 -0.663，但**不是越近越有用**: 广州-深圳同日相关最高
+# 却毫无增量（离线 P(更好)=8%），因为太近，邻站知道的本站自己也知道。
+# 成都->重庆隔 276km 增量最大（离线 MAE 0.9031->0.8325，P=100%）。
+XSTN = os.environ.get("PLOYGON_XSTN") == "1"
+XPARTNER = {                       # 站 -> 两个伙伴站（按上面的相关排序取前二）
+    "ZBAA": ("ZSQD", "ZSPD"), "ZSPD": ("ZHHH", "ZUCK"),
+    "ZGGG": ("ZGSZ", "ZSPD"), "ZGSZ": ("ZGGG", "ZSPD"),
+    "ZUUU": ("ZUCK", "ZHHH"), "ZUCK": ("ZUUU", "ZHHH"),
+    "ZHHH": ("ZUCK", "ZSPD"), "ZSQD": ("ZHHH", "ZSPD"),
+}
+XFEATS = ["rise_since_06", "trend_3h", "wspd_now"]
+
+
+def xstn_feature_names():
+    return [f"x{i}_{k}" for i in (1, 2) for k in XFEATS]
+
+
+def add_xstn_feats(rows):
+    """给每条样本补两个伙伴站同日同截止时刻的上午特征。"""
+    idx = {(r["stn"], r["date"]): r for r in rows}
+    for r in rows:
+        for i, p in enumerate(XPARTNER.get(r["stn"], ()), start=1):
+            src = idx.get((p, r["date"]))
+            for k in XFEATS:
+                r["f"][f"x{i}_{k}"] = None if src is None else src["f"].get(k)
+
+
+if XSTN:
+    FEATS.extend(xstn_feature_names())
 
 
 def climatology(days, cutoffs, split_year):
