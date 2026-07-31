@@ -78,6 +78,47 @@ if thin:
     print(f"[warn] 观测偏少的站: {', '.join(thin)}（IEM 归档滞后）")
 PY
 
+# 刷新训练集。**这一步不能省** —— 2026-07-31 查出 mos.csv 停在 7-26 整整五天，
+# 期间天气型剧变（北京 +4.4℃、成都 -8.4℃），模型权重跟不上，
+# 实测重训后 13 时 MAE 0.62 -> 0.50。每天几十秒，换训练数据永远是最新的。
+# 注意 predict_* 的模式特征是实时 API 取的，不读这些 csv；csv 只供训练。
+if [[ -z "$NOUPDATE" ]]; then
+    echo "刷新训练集（供重训用，预报本身不读 csv）…" >&2
+    for row in "mos_fcst:gfs_global:mos.csv" "mos_ecmwf:ecmwf_ifs025:mos_ecmwf.csv" \
+               "mos_cma:cma_grapes_global:mos_cma.csv" "mos_icon:icon_global:mos_icon.csv" \
+               "mos_jma_:jma_gsm:mos_jma_.csv" "mos_gem_:gem_global:mos_gem_.csv"; do
+        db=${row%%:*}; rest=${row#*:}; mdl=${rest%%:*}; out=${rest#*:}
+        python3 build_mos_dataset.py fetch --db "$db.sqlite" --model "$mdl" \
+            --start "$(TZ=Asia/Shanghai date -v-7d +%Y-%m-%d 2>/dev/null \
+                      || date -d '7 days ago' +%Y-%m-%d)" \
+            --end "$TODAY" >/dev/null 2>&1 || echo "  [warn] $mdl 训练数据刷新失败" >&2
+        python3 build_mos_dataset.py build --db "$db.sqlite" --obs-db cn.sqlite \
+            --daily-table daily --out "$out" >/dev/null 2>&1 || true
+    done
+fi
+
+# 模型过期检查。训练数据每天更新了，但权重要人工重训 ——
+# 超过 7 天不重训就大声提醒，别再让它默默漂移
+python3 - <<'PYCHK' >&2
+import os, time, csv, collections
+try:
+    age = (time.time() - os.path.getmtime("nowcast_nwp.json")) / 86400
+    d = collections.Counter(r["date"] for r in csv.DictReader(open("mos_multi.csv"))
+                            if r.get("lead") == "1" and r.get("y_tmax"))
+    print(f"[info] 模型已训练 {age:.1f} 天，训练集最新 {max(d) if d else '?'}")
+    if age > 7:
+        print(f"[WARN] 模型 {age:.0f} 天没重训了。天气型漂移会让精度慢慢下降，"
+              f"建议跑:\n"
+              f"       python3 merge_mos.py --base mos.csv --extra mos_ecmwf.csv "
+              f"mos_cma.csv mos_icon.csv mos_jma_.csv mos_gem_.csv --deb --out mos_multi.csv\n"
+              f"       python3 train_mos.py mos_multi.csv --obs-pen 1.0 --dump model.json\n"
+              f"       python3 train_nowcast.py --db cn.sqlite --cutoffs 9 10 11 12 13 "
+              f"--nwp-csv mos.csv --nwp-csv2 mos_ecmwf.csv mos_cma.csv mos_icon.csv "
+              f"mos_jma_.csv mos_gem_.csv --dump nowcast_nwp.json")
+except Exception as e:
+    print(f"[warn] 模型过期检查失败: {e}")
+PYCHK
+
 {
     echo
     echo "########## $(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S')  D+1/D+2 六模式 MOS ##########"
