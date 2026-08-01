@@ -97,7 +97,10 @@ ALIAS = {
 # 所以提前退出只能等这几个「一定有」的
 CORE = {"t2m", "d2m", "tcc", "sp", "u10", "v10"}
 
-FN = re.compile(r"gfs\.t(\d{2})z\.pgrb2\.?[^.]*\.f(\d{3})")
+# 末尾允许 _surf 之类的后缀，但**必须锚定行尾** —— 归档里每个数据文件旁边
+# 都有一个同名的 .OK 零字节标记文件（gfs.t12z.pgrb2.0p25.f000_surf.OK），
+# 不锚定的话它们会被当成 GRIB 去读，文件数翻倍、还全是读取失败。
+FN = re.compile(r"gfs\.t(\d{2})z\.pgrb2\.?[^.]*\.f(\d{3})(?:_[A-Za-z0-9]+)?$")
 DATE = re.compile(r"(20\d{2})(\d{2})(\d{2})")
 UTC = timezone.utc
 
@@ -127,11 +130,21 @@ def parse_name(path):
 
 
 def walk(root):
+    """收数据文件。跳过 .OK 标记和空文件。"""
     out = []
     for dp, _, fns in os.walk(root):
         for fn in fns:
-            if FN.search(fn):
-                out.append(os.path.join(dp, fn))
+            if fn.endswith((".OK", ".ok", ".idx", ".tmp")):
+                continue
+            if not FN.search(fn):
+                continue
+            p = os.path.join(dp, fn)
+            try:
+                if os.path.getsize(p) < 1024:      # 零字节/残缺
+                    continue
+            except OSError:
+                continue
+            out.append(p)
     return sorted(out)
 
 
