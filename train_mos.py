@@ -91,6 +91,14 @@ CONV_COLS = {"precipitation_max", "precipitation_peakmean",
              "cape_max", "cape_peakmean",
              "lifted_index_max", "lifted_index_peakmean"}
 
+# 逐时廓线特征（2026-08-01 的第 14 次尝试）。同样**实测未采用**，同样必须显式排除:
+# build_mos_dataset.daily_features 现在无条件产出这几列，run_daily.sh 每天重建
+# mos.csv —— 不排除的话下次每周重训会把它们静默吃进 D+1/D+2 生产模型。
+# 实测: 临近 12 时 0.6624 -> 0.6817（P=0%，显著变差），全部 P=10%，
+# 晚见顶日（目标人群）纹丝不动。设 PLOYGON_PROF=1 可重测。
+PROF_COLS = {"swrad_peak_h", "swrad_half_h", "swrad_late_frac",
+             "swrad_slope_pm", "cld_onset_h", "cld_slope_pm"}
+
 
 def _pred_rows(mte, pred_arch, prefer):
     """--pred 的输出必须来自 prefer 选中的架构，否则诊断的是不上线的模型。"""
@@ -109,6 +117,8 @@ def feature_names(rows: list[dict]) -> list[str]:
     skip = {"station", "date", "lead", "y_tmax"}
     if os.environ.get("PLOYGON_CONV") != "1":
         skip |= CONV_COLS
+    if os.environ.get("PLOYGON_PROF") != "1":
+        skip |= PROF_COLS
     names = sorted({k for r in rows for k in r} - skip)
     return names
 

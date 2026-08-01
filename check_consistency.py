@@ -201,15 +201,18 @@ def check_mos(args):
             rep(not miss, f"{tag} {cut} 时含全部 8 站",
                 "" if not miss else f"缺: {miss}（重训漏了 --split-year 2025？）")
 
-    leaked = sorted(TM.CONV_COLS & feats)
-    rep(not leaked, "被否决的对流因子没混进 MOS 上线模型",
+    leaked = sorted((TM.CONV_COLS | TM.PROF_COLS) & feats)
+    rep(not leaked, "被否决的实验特征没混进 MOS 上线模型",
         "" if not leaked else f"泄漏: {leaked}")
     # 临近预报侧同理。跨站特征更危险: predict_nowcast.py 根本没有算它们的代码，
     # 带着 PLOYGON_XSTN=1 训练出来的模型上线后会静默拿到 None。
     # oracle_* 是明知泄漏的先知实验特征（量「见顶时刻不确定」这个瓶颈值多少），
     # 上线就等于用未来信息预报。必须在这里挡死。
     rejected = ({"nwp_precip_peak", "nwp_precip_max", "nwp_cape_peak", "nwp_li_peak",
-                 "oracle_peak_h", "oracle_hours_to_peak"}
+                 "oracle_peak_h", "oracle_hours_to_peak",
+                 "nwp_swrad_peak_h", "nwp_swrad_half_h", "nwp_swrad_late_frac",
+                 "nwp_swrad_slope_pm", "nwp_cld_onset_h", "nwp_cld_slope_pm",
+                 "pk_p_late"}
                 | set(TN.xstn_feature_names()) | set(TN.CURVE_FEATS))
     for path, tag in ((args.nowcast_model, "临近预报模型"),
                       (args.nowcast_late_model, "临近预报晚时次模型")):
