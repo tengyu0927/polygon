@@ -346,29 +346,40 @@ def cmd_timing(a):
     if not runs:
         print("[!] 没有符合 --fh-max 的文件。")
         return 1
-    print(f"共 {len(runs)} 轮起报，时效 <= f{a.fh_max}\n")
-    import statistics as st
+    print(f"共 {len(runs)} 轮起报，时效 <= f{a.fh_max}")
+    print("落地滞后 = 文件 mtime - 起报时刻。用滞后而不是时钟时刻，")
+    print("因为 12Z 轮落在午夜前后，按时钟比较会跨零点、得出假结论。\n")
     for hh in sorted({k.hour for k in runs}):
         ks = [k for k in runs if k.hour == hh]
-        print(f"── {hh:02d}Z 轮（{len(ks)} 次）")
-        print(f"  {'时效':<8}{'落地时刻(北京)中位':>20}{'最早':>8}{'最晚':>8}"
-              f"{'>13:15 的比例':>14}")
+        # 该轮次要服务的起报时刻: 00Z(北京08:00)->当天13:15; 12Z(北京20:00)->次日09:15
+        if hh == 0:
+            need_h, tag = 5.25, "当天 13:15 起报"
+        elif hh == 12:
+            need_h, tag = 13.25, "次日 09:15 起报"
+        else:
+            need_h, tag = 6.0, "参考"
+        print(f"── {hh:02d}Z 轮（{len(ks)} 次）  要服务 {tag}，"
+              f"可用窗口 = 起报后 {need_h} 小时内")
+        print(f"  {'时效':<8}{'滞后中位':>10}{'90分位':>9}{'最大':>9}"
+              f"{'超窗比例':>10}")
         for fh_ in a.probe:
-            got = [runs[k][fh_] for k in ks if fh_ in runs[k]]
+            got = [(runs[k][fh_] - k.timestamp()) / 3600.0
+                   for k in ks if fh_ in runs[k]]
             if not got:
                 print(f"  f{fh_:03d}    （无此档）")
                 continue
-            loc = [datetime.fromtimestamp(t, CST8) for t in got]
-            mins = sorted(x.hour * 60 + x.minute for x in loc)
-            med = mins[len(mins) // 2]
-            late = sum(1 for m in mins if m > 13 * 60 + 15) / len(mins)
-            print(f"  f{fh_:03d}{'':<4}{med//60:>14d}:{med%60:02d}"
-                  f"{mins[0]//60:>6d}:{mins[0]%60:02d}"
-                  f"{mins[-1]//60:>6d}:{mins[-1]%60:02d}{late:>14.1%}")
+            got.sort()
+            over = sum(1 for x in got if x > need_h) / len(got)
+            flag = "  <- 超标" if over > 0.05 else ""
+            print(f"  f{fh_:03d}{'':<4}{got[len(got)//2]:>9.1f}h"
+                  f"{got[int(len(got)*.9)]:>8.1f}h{got[-1]:>8.1f}h"
+                  f"{over:>10.1%}{flag}")
         print()
     print("怎么读这张表:")
-    print("  00Z 轮要给 13:15 起报用 -> 看「>13:15 的比例」，超过 5% 就不能用")
-    print("  12Z 轮要给次日 9:15 用  -> 落地在当天 20-24 时都没问题（次日才用）")
+    print("  「超窗比例」= 该档在需要它的那个起报时刻还没落地的天数占比。")
+    print("  超过 5% 就不能把这一轮接进那个起报时刻 —— 训练时以为有、")
+    print("  上线时取不到，是本项目最忌讳的错误。")
+    print("  13:15 起报只需要覆盖到当晚，即 f000~f018；f036/f048 是 D+1/D+2 才用的。")
     return 0
 
 
