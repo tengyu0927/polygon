@@ -41,7 +41,21 @@ import train_nowcast as N
 # 决定性证据是目标人群没站住: 16 时后见顶的 102 天上，七档变化
 # +0.010/0.000/-0.029/+0.020/-0.020/-0.020/-0.010，正负交替、无一致方向。
 # 机制若成立，这一层该全线改善。开关保留，样本更多时可重测。
-PEAK_FEATS = ["pk_pred", "pk_minus_clim", "pk_minus_cutoff"]
+# 2026-08-01 重测: 上面那次失败的原因是**辅助模型太弱**。原来用岭回归 +
+# 只有基础特征，实测见顶时刻 MAE 2.21h -> 2.19h（等于没预测）。
+# 换成 GBM + 全部 70 项特征（含六模式的午后廓线 t2m_peak_h / t2m_slope_pm /
+# t2m_late_minus_peak）后: 2.21h -> 1.93h，重庆 3.11 -> 2.49；
+# 「≥15 时见顶」的分类 AUC 0.65-0.78。所以值得重开一次。
+# 先知实验（PLOYGON_ORACLE_PEAK=1）给出的上限是 -26.6%。
+PEAK_FEATS = ["pk_pred", "pk_minus_clim", "pk_minus_cutoff", "pk_p_late"]
+
+try:
+    from sklearn.ensemble import HistGradientBoostingRegressor as _GBR
+    from sklearn.ensemble import HistGradientBoostingClassifier as _GBC
+    import numpy as _np
+    PEAK_GBM = True
+except ImportError:
+    PEAK_GBM = False
 
 
 def add_peak_feats(rows, model, med, names, cutoff):
@@ -52,12 +66,21 @@ def add_peak_feats(rows, model, med, names, cutoff):
                 r["f"][k] = None
         return
     X, _ = N.matrix(rows, med, names)
-    for r, p in zip(rows, T.ridge_pred(model, X)):
-        p = min(22.0, max(8.0, p))            # 见顶时刻限定在 8-22 时
+    reg, clf = model if isinstance(model, tuple) else (model, None)
+    if clf is not None or PEAK_GBM and not isinstance(reg, dict):
+        Xa = _np.asarray(X, float)
+        pv = reg.predict(Xa)
+        pl = clf.predict_proba(Xa)[:, 1] if clf is not None else [None] * len(rows)
+    else:
+        pv = T.ridge_pred(reg, X)
+        pl = [None] * len(rows)
+    for r, p, q in zip(rows, pv, pl):
+        p = min(22.0, max(8.0, float(p)))     # 见顶时刻限定在 8-22 时
         r["f"]["pk_pred"] = p
         cp = r["f"].get("clim_peak_h")
         r["f"]["pk_minus_clim"] = None if cp is None else p - cp
         r["f"]["pk_minus_cutoff"] = p - cutoff
+        r["f"]["pk_p_late"] = None if q is None else float(q)
 
 
 def clim_before(days, cutoffs, cut_date):
@@ -104,12 +127,28 @@ def fit_block(tr, names, alphas, val_days=90, peak=False, cutoff=12):
         fit_tr, fit_va = tr, tr
 
     def fit_peak(rows_tr, names_):
-        """辅助模型: 用上午特征回归当天实际见顶时刻。"""
+        """辅助模型: 用上午特征预报当天见顶时刻 + 「晚见顶」概率。
+
+        岭回归版实测等于没预测（2.21h -> 2.19h）。GBM 版 2.21h -> 1.93h，
+        「>=15 时见顶」AUC 0.65-0.78，所以这里优先用 GBM。
+        """
         sub = [r for r in rows_tr if r.get("peak_h") is not None]
         if len(sub) < 300:
             return None
         X, med_ = N.matrix(sub, None, names_)
-        return T.ridge_fit(X, [float(r["peak_h"]) for r in sub], 10.0), med_
+        y = [float(r["peak_h"]) for r in sub]
+        if not PEAK_GBM:
+            return T.ridge_fit(X, y, 10.0), med_
+        Xa = _np.asarray(X, float)
+        reg = _GBR(max_iter=400, learning_rate=.05, max_leaf_nodes=31,
+                   min_samples_leaf=20, l2_regularization=1.0,
+                   random_state=0).fit(Xa, _np.asarray(y))
+        lab = _np.asarray([1 if v >= 15 else 0 for v in y])
+        clf = None
+        if 0 < lab.sum() < len(lab):
+            clf = _GBC(max_iter=300, learning_rate=.05, max_leaf_nodes=31,
+                       min_samples_leaf=20, random_state=0).fit(Xa, lab)
+        return (reg, clf), med_
 
     def one(rows_tr, rows_va):
         X, med = N.matrix(rows_tr, None, names)

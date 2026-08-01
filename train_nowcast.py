@@ -418,6 +418,11 @@ def make_samples(days, cutoff, clim_r, clim_p, nwp_map, split_year, m2_maps=()):
         # 都不可能超过它。绝不可上线，也不进 check_consistency 的白名单。
         for r in out:
             ph = r.get("peak_h")
+            # 可加噪：量「见顶时刻要预测到多准才有用」。噪声 0 = 完美先知。
+            if ph is not None and ORACLE_NOISE > 0:
+                import random as _rnd
+                _rnd.seed(hash((r["stn"], r["date"], cutoff)) & 0xffffffff)
+                ph = ph + _rnd.gauss(0.0, ORACLE_NOISE)
             r["f"]["oracle_peak_h"] = None if ph is None else float(ph)
             r["f"]["oracle_hours_to_peak"] = (
                 None if ph is None else float(ph) - cutoff)
@@ -425,6 +430,7 @@ def make_samples(days, cutoff, clim_r, clim_p, nwp_map, split_year, m2_maps=()):
 
 
 ORACLE_PEAK = os.environ.get("PLOYGON_ORACLE_PEAK") == "1"
+ORACLE_NOISE = float(os.environ.get("PLOYGON_ORACLE_NOISE") or 0.0)
 if ORACLE_PEAK:
     FEATS.extend(["oracle_peak_h", "oracle_hours_to_peak"])
 
