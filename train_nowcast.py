@@ -473,10 +473,32 @@ def climatology(days, cutoffs, split_year):
             o = morning(hrs, c)
             if o:
                 rise[c][(stn, mo)].append(tmax - max(v["t"] for v in o.values()))
-    R = {c: {k: sum(v) / len(v) for k, v in m.items() if len(v) >= 20}
-         for c, m in rise.items()}
-    P = {k: sum(v) / len(v) for k, v in peak.items() if len(v) >= 20}
+    R = {c: _month_est(m) for c, m in rise.items()}
+    P = _month_est(peak)
     return R, P
+
+
+def _month_est(m, need=20):
+    """每(站,月)的均值。样本够就用本月；不够退回 ±1 月窗口。
+
+    2026-08-01 加的兜底。深圳换用 WU 序列后只剩 2024-07 起的数据，
+    按「本月 >= 20 天」只有 7 月和 12 月过关 —— 当时正是 8 月，
+    clim_rise / clim_peak / hours_to_peak 三个特征全走中位数填补，
+    而且**不报错、不留痕**，只有翻模型 json 才看得出来。
+
+    只在本月不足时才放宽，所以对样本充足的 7 个站**逐位不变**。
+    """
+    out = {}
+    for (stn, mo), v in m.items():
+        if len(v) >= need:
+            out[(stn, mo)] = sum(v) / len(v)
+            continue
+        wide = list(v)
+        for d in (-1, 1):
+            wide += m.get((stn, (mo + d - 1) % 12 + 1), [])
+        if len(wide) >= need:
+            out[(stn, mo)] = sum(wide) / len(wide)
+    return out
 
 
 # ============================================================ 训练
