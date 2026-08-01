@@ -75,21 +75,31 @@ STATIONS = {
 # t2m 是必须的，其余有就抽、没有就跳过。
 WANT = {
     "t2m":   "2m 气温（必须）",
+    "r2":    "2m 相对湿度",
     "d2m":   "2m 露点",
     "tcc":   "总云量",
     "dswrf": "向下短波辐射",
+    "hpbl":  "边界层高度（见顶时刻的直接度量）",
+    "tsfc":  "地表皮温",
+    "prmsl": "海平面气压",
     "sp":    "地面气压",
     "u10":   "10m 风 u",
     "v10":   "10m 风 v",
+    "tp":    "累积降水",
     "prate": "降水率",
     "gust":  "阵风",
     "cape":  "对流有效位能",
 }
-# pygrib / wgrib2 里的名字与 cfgrib 不一样，做个映射
+# 各后端 / 各版本 ecCodes 的短名不统一，全部映射到上面的 key。
+# 2026-08-01: 用户归档的 _surf 子集里是 2t / 2r / 10u / 10v / dswrf /
+# hpbl / tp / prmsl / t(surface)，其中 2r(相对湿度) 和 hpbl(边界层高度)
+# 原来没在表里，会被静默丢掉。
 ALIAS = {
-    "2t": "t2m", "2d": "d2m", "10u": "u10", "10v": "v10",
-    "TMP": "t2m", "DPT": "d2m", "TCDC": "tcc", "DSWRF": "dswrf",
-    "PRES": "sp", "UGRD": "u10", "VGRD": "v10", "PRATE": "prate",
+    "2t": "t2m", "2d": "d2m", "2r": "r2", "10u": "u10", "10v": "v10",
+    "TMP": "t2m", "DPT": "d2m", "RH": "r2", "TCDC": "tcc", "DSWRF": "dswrf",
+    "HPBL": "hpbl", "blh": "hpbl", "PRMSL": "prmsl", "PRES": "sp", "msl": "prmsl",
+    "sdswrf": "dswrf", "avg_dswrf": "dswrf", "DSWRF_surface": "dswrf",
+    "UGRD": "u10", "VGRD": "v10", "PRATE": "prate", "APCP": "tp",
     "GUST": "gust", "CAPE": "cape",
 }
 
@@ -361,6 +371,7 @@ def nearest_idx(lats, lons, la, lo):
 
 def read_one(kind, obj, path):
     """读一个 GRIB，返回 {var: {station: value}}。读不出返回 {}。"""
+    import numpy as np
     out = defaultdict(dict)
     if kind == "eccodes":
         ec = obj
@@ -379,6 +390,8 @@ def read_one(kind, obj, path):
                 try:
                     sn = ec.codes_get(gid, "shortName")
                     key = ALIAS.get(sn, sn)
+                    if key == "t" and ec.codes_get(gid, "typeOfLevel") == "surface":
+                        key = "tsfc"
                     if key not in WANT or key in out:
                         continue                    # 每个变量只取第一条（地面层）
                     for s_, (la, lo) in STATIONS.items():
@@ -397,7 +410,6 @@ def read_one(kind, obj, path):
                 # 却会丢掉排在后面的 prate / cape —— 这份数据抽一次要十几小时，
                 # 为省 16% 留个缺口不划算。提速靠 --jobs 并行和 --fh-min/max 筛时效。
         return out
-    import numpy as np
     if kind == "cfgrib":
         try:
             dss = obj.open_datasets(path, backend_kwargs={"indexpath": ""})
@@ -429,19 +441,35 @@ def read_one(kind, obj, path):
             gr = obj.open(path)
         except Exception:
             return {}
-        for m in gr:
-            key = ALIAS.get(getattr(m, "shortName", ""), getattr(m, "shortName", ""))
-            if key not in WANT:
-                continue
-            try:
-                for s, (la, lo) in STATIONS.items():
-                    v, _, _ = m.data(lat1=la - .2, lat2=la + .2,
-                                     lon1=(lo % 360) - .2, lon2=(lo % 360) + .2)
-                    if v.size:
-                        out[key][s] = float(v.ravel()[v.size // 2])
-            except Exception:
-                continue
-        gr.close()
+        idx = None
+        try:
+            for m in gr:
+                sn = getattr(m, "shortName", "")
+                key = ALIAS.get(sn, sn)
+                # surface 层的 t 是地表皮温，与 2m 气温不是一回事，单独存
+                if key == "t" and getattr(m, "typeOfLevel", "") == "surface":
+                    key = "tsfc"
+                if key not in WANT or key in out:
+                    continue
+                try:
+                    vals = m.values
+                except Exception:
+                    continue
+                if idx is None:                     # 网格对所有消息都一样，只算一次
+                    la2d, lo2d = m.latlons()
+                    idx = {}
+                    for s_, (la, lo) in STATIONS.items():
+                        d = (la2d - la) ** 2 + (((lo2d - lo % 360 + 180) % 360) - 180) ** 2
+                        idx[s_] = np.unravel_index(int(np.argmin(d)), d.shape)
+                for s_, (i, j) in idx.items():
+                    try:
+                        v = float(vals[i, j])
+                    except Exception:
+                        continue
+                    if v == v:
+                        out[key][s_] = v
+        finally:
+            gr.close()
         return out
     # wgrib2: 一次调用把 8 个站全取出来
     pts = ":".join(f"{lo % 360}:{la}" for la, lo in STATIONS.values())
