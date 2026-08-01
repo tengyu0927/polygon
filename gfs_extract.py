@@ -217,6 +217,102 @@ def cmd_scan(a):
     return 0
 
 
+# ============================================================ survey
+
+def cmd_survey(a):
+    """抽样扫描整个归档，回答「哪个变量从哪天开始有、00Z 和 12Z 是否一致」。
+
+    归档跨度两年多，业务下载的变量集可能中途改过（实测 2024-04 是 9 个变量、
+    7.6MB，2026-06 变成 14 个、14MB，多了 sp 和 lcc/mcc/hcc/tcc）。
+    不先摸清楚就抽，训练集会出现说不清来源的缺测。
+    """
+    kind, obj = need_backend()
+    files = walk(a.root)
+    if not files:
+        print(f"[!] {a.root} 下没找到文件。")
+        return 1
+    by = defaultdict(list)
+    for p in files:
+        g = parse_name(p)
+        if g and g[1] <= a.fh_max:
+            by[(g[0].date(), g[0].hour)].append(p)
+    keys = sorted(by)
+    if not keys:
+        print("[!] 没有符合 --fh-max 的文件。")
+        return 1
+    # 按时间均匀抽 n 个 (日期,轮次)，两端一定取到\n")
+    n = min(a.samples, len(keys))
+    picks = [keys[round(i * (len(keys) - 1) / max(1, n - 1))] for i in range(n)]
+    seen, order = {}, []
+    print(f"共 {len(keys)} 个 (日期,轮次)，均匀抽 {len(set(picks))} 个探测")
+    print(f"  {'日期':<12}{'轮':<5}{'MB':>6}  变量")
+    for k in sorted(set(picks)):
+        p = sorted(by[k])[len(by[k]) // 2]
+        names = set()
+        try:
+            if kind == "eccodes":
+                with open(p, "rb") as fh_:
+                    while True:
+                        gid = obj.codes_grib_new_from_file(fh_)
+                        if gid is None:
+                            break
+                        try:
+                            sn = obj.codes_get(gid, "shortName")
+                            if sn == "t" and obj.codes_get(gid, "typeOfLevel") == "surface":
+                                sn = "tsfc"
+                            names.add(ALIAS.get(sn, sn))
+                        finally:
+                            obj.codes_release(gid)
+            elif kind == "pygrib":
+                gr = obj.open(p)
+                try:
+                    for m in gr:
+                        sn = getattr(m, "shortName", "")
+                        if sn == "t" and getattr(m, "typeOfLevel", "") == "surface":
+                            sn = "tsfc"
+                        names.add(ALIAS.get(sn, sn))
+                finally:
+                    gr.close()
+            else:
+                r = subprocess.run([obj, "-s", p], capture_output=True,
+                                   text=True, timeout=300)
+                for ln in r.stdout.splitlines():
+                    f_ = ln.split(":")
+                    if len(f_) > 3:
+                        names.add(ALIAS.get(f_[3], f_[3]))
+        except Exception as e:
+            print(f"  {k[0]}  {k[1]:02d}Z  读取失败 {type(e).__name__}")
+            continue
+        use = sorted(names & set(WANT))
+        seen[k] = use
+        order.append(k)
+        mb = os.path.getsize(p) / 1048576
+        print(f"  {str(k[0]):<12}{k[1]:02d}Z  {mb:>5.1f}  {' '.join(use)}")
+    if not seen:
+        print("\n[!] 一个都没读成功。")
+        return 1
+    print(f"\n各变量的可用区间（按抽样点）")
+    allv = sorted({v for u in seen.values() for v in u})
+    print(f"  {'变量':<8}{'出现':>6}/{len(seen):<5}{'最早':<12}{'最晚':<12}  说明")
+    for v in allv:
+        hit = [k for k in order if v in seen[k]]
+        print(f"  {v:<8}{len(hit):>6}/{len(seen):<5}{str(hit[0][0]):<12}"
+              f"{str(hit[-1][0]):<12}  {WANT.get(v,'')}")
+    miss = sorted(set(WANT) - set(allv))
+    if miss:
+        print(f"\n归档里从来没有的: {' '.join(miss)}")
+    print(f"\n00Z vs 12Z 的变量集是否一致")
+    for hh in sorted({k[1] for k in seen}):
+        sets = {tuple(v) for k, v in seen.items() if k[1] == hh}
+        print(f"  {hh:02d}Z: {len(sets)} 种不同的变量组合"
+              + ("  （一致）" if len(sets) == 1 else "  （中途变过，见上表）"))
+    a0 = {tuple(v) for k, v in seen.items() if k[1] == 0}
+    a12 = {tuple(v) for k, v in seen.items() if k[1] == 12}
+    if a0 and a12:
+        print(f"  两轮次的组合集合{'相同' if a0 == a12 else '不同'}")
+    return 0
+
+
 # ============================================================ GRIB 后端
 
 def backend():
@@ -608,6 +704,11 @@ def main() -> int:
     s.add_argument("path")
     s.add_argument("--root", default="")
     s.set_defaults(fn=cmd_inspect)
+    s = sub.add_parser("survey", help="抽样扫描: 哪个变量从哪天开始有")
+    s.add_argument("root")
+    s.add_argument("--samples", type=int, default=40, help="抽多少个时间点")
+    s.add_argument("--fh-max", type=int, default=48)
+    s.set_defaults(fn=cmd_survey)
     s = sub.add_parser("extract", help="抽成 CSV")
     s.add_argument("root")
     s.add_argument("--out", default="gfs_stations.csv")
