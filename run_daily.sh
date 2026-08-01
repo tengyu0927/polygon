@@ -55,7 +55,19 @@ if [[ -z "$NOUPDATE" ]]; then
     python3 iem_multi.py --db cn.sqlite --stations "$STATIONS" \
         --recent-days 5 --timeout 180 >/dev/null 2>&1 \
         || echo "[warn] 实况增量更新失败，recent_bias 可能滞后" >&2
+    # ZGSZ 覆盖成 WU（香港流浮山）—— 必须在 iem_multi 之后、建日表之前
+    python3 wu_obs.py --db cn.sqlite --update --days 5 >/dev/null 2>&1 \
+        || echo "[warn] WU 实况更新失败，ZGSZ 可能用到陈旧数据" >&2
     python3 iem_multi.py --db cn.sqlite --daily >/dev/null 2>&1 || true
+
+    # 核对实测口径。最终对错以 WU 为准，训练/检验的实况必须和它一致 ——
+    # WU 随时可能改站点映射（2026-08-01 就发现 ZGSZ 挂的是香港流浮山）。
+    # 只打警告，不中断当天的预报。
+    _wu=$(python3 wu_check.py --db cn.sqlite --days 7 2>/dev/null | tail -30)
+    if echo "$_wu" | grep -q "不一致的站"; then
+        echo "[WARN] 实测与 WU 对不上:" >&2
+        echo "$_wu" | grep -A2 "不一致的站" >&2
+    fi
 fi
 
 # 跑得太早会用到没走完的今天。18 时之前给出明确警告而不是静默出数

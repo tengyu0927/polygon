@@ -183,6 +183,24 @@ def check_mos(args):
     # 忘了排除就会在下次重训时静默上线。2026-07-31 的对流因子实验就踩在这条线上。
     import train_mos as TM
     import train_nowcast as TN
+
+    # 8 个站一个都不能少。2026-08-01 踩过: ZGSZ 换成 WU 序列后只剩 2024-07 起
+    # 的数据，而 climatology() 用 --split-year（默认 2024）卡训练年份，
+    # 导致 ZGSZ 在气候态里为空 -> 整个站被静默丢掉，预报表少一行也不报错。
+    # 重训必须带 --split-year 2025，见 README「每周重训」。
+    for path, tag in ((args.nowcast_model, "临近预报模型"),
+                      (args.nowcast_late_model, "临近预报晚时次模型")):
+        if not os.path.exists(path):
+            continue
+        nc = json.load(open(path, encoding="utf-8"))
+        for cut, blk in sorted(nc.items()):
+            if not isinstance(blk, dict) or not blk.get("clim_rise"):
+                continue
+            got = {k.split("|")[0] for k in blk["clim_rise"]}
+            miss = sorted(set(TN.NAMES) - got)
+            rep(not miss, f"{tag} {cut} 时含全部 8 站",
+                "" if not miss else f"缺: {miss}（重训漏了 --split-year 2025？）")
+
     leaked = sorted(TM.CONV_COLS & feats)
     rep(not leaked, "被否决的对流因子没混进 MOS 上线模型",
         "" if not leaked else f"泄漏: {leaked}")

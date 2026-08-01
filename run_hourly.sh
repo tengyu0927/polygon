@@ -66,6 +66,11 @@ if [[ -z "$NOFETCH" ]]; then
     # IEM 慢起来能挂几十分钟，而 urlopen 的 timeout 只管单次 socket 读
     if python3 iem_multi.py --db cn.sqlite --stations "$STATIONS" \
             --recent-days 2 --timeout 120 >/dev/null 2>&1; then
+        # ZGSZ 的实况以 WU 为准（WU 的 ZGSZ 页面挂的是香港流浮山，
+        # 打分也按它，所以模型训练在这条序列上）。IEM 抓回来的是深圳宝安
+        # METAR，必须覆盖掉，否则库里混进另一个站的观测。见 wu_obs.py
+        python3 wu_obs.py --db cn.sqlite --update --days 2 >/dev/null 2>&1 \
+            || echo "[warn] WU 实况更新失败，ZGSZ 可能用到陈旧数据" >&2
         python3 iem_multi.py --db cn.sqlite --daily >/dev/null 2>&1 || true
     else
         echo "[warn] IEM 实况更新失败，本轮改用 AWC 实时源（--live）" >&2

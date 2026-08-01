@@ -59,6 +59,46 @@ CST = timezone(timedelta(hours=8))
 AWC = "https://aviationweather.gov/api/data/metar"
 UA = "nowcast/1.0 (station Tmax research)"
 
+# 这些站的实况以 Weather Underground 为准，不能用 AWC 的 METAR。
+# ZGSZ: WU 的 ZGSZ:9:CN 返回的是 Lau Fau Shan（香港流浮山，WMO 45035），
+# 离深圳宝安 30km，而打分以 WU 为准，所以模型也训练在这条序列上（见 wu_obs.py）。
+WU_STATIONS = {"ZGSZ"}
+
+
+def _overwrite_from_wu(days, stations, tgt, db):
+    """把 days 里这些站的观测换成 WU 的。取不到就退回读库，绝不静默用 METAR。"""
+    import wu_obs as WO
+    for s in stations:
+        got = {}
+        for k in range(11):
+            d = tgt - timedelta(days=k)
+            try:
+                rows = WO.to_rows(WO.wu_obs(s, d.strftime("%Y%m%d"),
+                                            d.strftime("%Y%m%d"), retries=2))
+            except Exception as e:
+                print(f"[warn] WU 取 {s} {d} 失败: {str(e)[:60]}", file=sys.stderr)
+                rows = {}
+            for dd, rr in rows.items():
+                for r in rr:
+                    dt = datetime.fromtimestamp(r[1], UTC).astimezone(CST)
+                    cur = got.setdefault((s, dd), {})
+                    if dt.hour in cur and cur[dt.hour]["t"] >= r[4]:
+                        continue
+                    cur[dt.hour] = {"t": r[4], "dewp": r[5], "rh": r[6],
+                                    "wspd": r[8], "pres": r[10], "cld": None,
+                                    "ts": 0.0, "ra": 0.0, "obsc": 0.0, "drct": r[7]}
+        if not got.get((s, tgt.isoformat())):
+            print(f"[warn] WU 没给 {s} 当天数据，退回读 {db}（口径仍是 WU 的归档）",
+                  file=sys.stderr)
+            fb = from_db(db, "obs", [s],
+                         {(tgt - timedelta(days=k)).isoformat() for k in range(11)})
+            got.update(fb)
+        for k in [k for k in days if k[0] == s]:
+            days.pop(k)
+        days.update(got)
+        n = len(got.get((s, tgt.isoformat()), {}))
+        print(f"  {s} 改用 WU 实况（Lau Fau Shan），当天 {n} 个小时", file=sys.stderr)
+
 
 def from_db(db, table, stations, dates):
     """从 cn.sqlite 读指定日期的逐时观测，结构与训练一致。"""
@@ -268,6 +308,11 @@ def main() -> int:
             days = from_db(args.db, args.table, stations,
                            {(tgt - timedelta(days=k)).isoformat()
                             for k in range(11)})
+        # ZGSZ 的模型学的是 WU 的 Lau Fau Shan（见 wu_obs.py），
+        # 而 AWC 给的是深圳宝安的 METAR —— 两个站相距 30km，
+        # 直接用会造成「拿 A 站的上午实测喂 B 站的模型」。必须单独覆盖。
+        if WU_STATIONS & set(stations):
+            _overwrite_from_wu(days, WU_STATIONS & set(stations), tgt, args.db)
     else:
         src = args.db
         # 多取 10 天: rise_anom_3d/7d 要回看前几个可用日的实际升幅

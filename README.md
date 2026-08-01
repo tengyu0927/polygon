@@ -150,7 +150,44 @@ python3 wu_check.py --stations ZGSZ --hourly     # 单站逐时明细
 判据是「完全相同」比例，**不是站名** —— WU 用自己的写法
 （Beijing/Capital、Qingdao/Liuting 等），名字不同不代表站不同。
 
-**建议每月跑一次**：WU 随时可能改站点映射，别的站将来也可能出同样的问题。
+**已加进 `run_daily.sh` 每天自动跑**（核对最近 7 天，对不上就打 `[WARN]`，不中断预报）。
+
+#### 已处理: 深圳改用 WU 的流浮山序列（2026-08-01 上线）
+
+按「以 WU 为准」的原则，`wu_obs.py --migrate` 把 `cn.sqlite` 里 ZGSZ 的观测
+换成了 WU 那条序列（原 METAR 259,092 条完整备份在 `obs_zgsz_metar` 表，
+`wu_obs.py --restore` 可回滚）。切换后 **8/8 站与 WU 100% 一致**。
+
+**为什么直接换实测，而不是学一个「ZGSZ → 流浮山」的转换**
+（624 天、2024-07~2026-07、按时间 7:3 切分，目标=流浮山日最高温）：
+
+| 13 时方案 | MAE | ±1℃ |
+|---|---|---|
+| ZGSZ **真实** tmax + 常数偏移（转换法的**理论上限**）| 1.030 | 57% |
+| 只用 ZGSZ 上午实测 | 1.015 | 55% |
+| **只用流浮山自己上午实测** | **0.631** | **89%** |
+| 两站上午实测合用 | 0.575 | 89% |
+
+用目标站自己的上午实测，比转换法的天花板还好 0.4 度 —— 与全项目的主线结论一致：
+**只有站点自己的温度计知道这个站点**。
+
+**三个代价，必须知道**：
+
+1. WU 不给 `clds` / `wx_phrase` / `vis`，深圳的 `cld_now`、`cld_mean_am`、
+   `ts_am`、`ra_am`、`obsc_am` 五个特征全空，靠中位数填补＋缺测指示位参与。
+   输出里深圳那行不再有「上午云量」备注。
+2. 流浮山 2024-07 前是 8 条/天（三小时一次），临近预报一天都用不了。
+   **深圳只有约 2 年可用历史，其余 7 站有 30 年**，所以它走「合并」模型而非分站。
+3. `predict_nowcast.py --live` 从 AWC 取的是深圳宝安 METAR，**必须覆盖** ——
+   已加 `WU_STATIONS` / `_overwrite_from_wu()`，每轮会打印
+   `ZGSZ 改用 WU 实况（Lau Fau Shan），当天 N 个小时`。取不到会退回读库并告警，
+   绝不静默用 METAR。
+
+**踩过的坑（已加护栏）**：`climatology()` 按 `--split-year`（默认 2024）卡训练年份，
+而深圳数据从 2024-07 才开始 —— 默认参数下它在气候态里为空，**整个站被静默丢掉**，
+预报表少一行也不报错。所以重训必须带 `--split-year 2025`
+（2025 而非 2026: 气候态只用 <2025，安全早于日期切分点 2025-12-15，不泄漏）。
+`check_consistency.py` 新增「每个时次含全部 8 站」检查，注入验证过能抓到。
 
 
 ### 六个模式的来源与分辨率（2026-08-01 实测确认）
@@ -1095,8 +1132,9 @@ python3 merge_mos.py --base mos.csv --extra mos_ecmwf.csv mos_cma.csv \
 python3 train_mos.py mos_multi.csv --obs-pen 1.0 --dump model.json --pred pred.csv
 python3 train_nowcast.py --db cn.sqlite --cutoffs 9 10 11 12 13 --nwp-csv mos.csv \
     --nwp-csv2 mos_ecmwf.csv mos_cma.csv mos_icon.csv mos_jma_.csv mos_gem_.csv \
-    --dump nowcast_nwp.json
-python3 train_nowcast.py --db cn.sqlite --cutoffs 14 15 --dump nowcast_late.json
+    --split-year 2025 --dump nowcast_nwp.json
+python3 train_nowcast.py --db cn.sqlite --cutoffs 14 15 --split-year 2025 \
+    --dump nowcast_late.json
 python3 check_consistency.py     # 重训后必跑
 ```
 
