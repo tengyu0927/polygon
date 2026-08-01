@@ -412,7 +412,21 @@ def make_samples(days, cutoff, clim_r, clim_p, nwp_map, split_year, m2_maps=()):
 
     if XSTN:
         add_xstn_feats(out)
+    if ORACLE_PEAK:
+        # **明知泄漏的先知实验**，只用来量「见顶时刻不确定」这个瓶颈值多少。
+        # 把当天真实见顶时刻直接喂进特征表 —— 任何见顶时刻预测器的效果
+        # 都不可能超过它。绝不可上线，也不进 check_consistency 的白名单。
+        for r in out:
+            ph = r.get("peak_h")
+            r["f"]["oracle_peak_h"] = None if ph is None else float(ph)
+            r["f"]["oracle_hours_to_peak"] = (
+                None if ph is None else float(ph) - cutoff)
     return out
+
+
+ORACLE_PEAK = os.environ.get("PLOYGON_ORACLE_PEAK") == "1"
+if ORACLE_PEAK:
+    FEATS.extend(["oracle_peak_h", "oracle_hours_to_peak"])
 
 
 # 跨站特征（A/B 测试中）。设 PLOYGON_XSTN=1 打开。

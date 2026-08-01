@@ -206,8 +206,11 @@ def check_mos(args):
         "" if not leaked else f"泄漏: {leaked}")
     # 临近预报侧同理。跨站特征更危险: predict_nowcast.py 根本没有算它们的代码，
     # 带着 PLOYGON_XSTN=1 训练出来的模型上线后会静默拿到 None。
-    rejected = ({"nwp_precip_peak", "nwp_precip_max", "nwp_cape_peak", "nwp_li_peak"}
-                | set(TN.xstn_feature_names()))
+    # oracle_* 是明知泄漏的先知实验特征（量「见顶时刻不确定」这个瓶颈值多少），
+    # 上线就等于用未来信息预报。必须在这里挡死。
+    rejected = ({"nwp_precip_peak", "nwp_precip_max", "nwp_cape_peak", "nwp_li_peak",
+                 "oracle_peak_h", "oracle_hours_to_peak"}
+                | set(TN.xstn_feature_names()) | set(TN.CURVE_FEATS))
     for path, tag in ((args.nowcast_model, "临近预报模型"),
                       (args.nowcast_late_model, "临近预报晚时次模型")):
         if not os.path.exists(path):
