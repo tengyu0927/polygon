@@ -139,22 +139,36 @@ def parse_name(path):
     return init, fh
 
 
-def walk(root):
-    """收数据文件。跳过 .OK 标记和空文件。"""
-    out = []
+def walk(root, verbose=True, check_size=True):
+    """收数据文件。跳过 .OK 标记和空文件。
+
+    归档可能有几十万个文件（1702 轮 × 209 档 × 2 个 .OK），
+    在网络盘上光扫目录就要几分钟 —— 所以边扫边报进度，
+    否则用户看到的是一个「什么都不输出」的进程，分不清是卡死还是在跑。
+    """
+    out, n = [], 0
+    t0 = time.time()
     for dp, _, fns in os.walk(root):
         for fn in fns:
+            n += 1
+            if verbose and n % 100000 == 0:
+                print(f"  扫目录… 已看过 {n} 个文件，收下 {len(out)} 个"
+                      f"（{time.time()-t0:.0f} 秒）", file=sys.stderr, flush=True)
             if fn.endswith((".OK", ".ok", ".idx", ".tmp")):
                 continue
             if not FN.search(fn):
                 continue
             p = os.path.join(dp, fn)
-            try:
-                if os.path.getsize(p) < 1024:      # 零字节/残缺
+            if check_size:
+                try:
+                    if os.path.getsize(p) < 1024:      # 零字节/残缺
+                        continue
+                except OSError:
                     continue
-            except OSError:
-                continue
             out.append(p)
+    if verbose and n > 100000:
+        print(f"  扫完: {n} 个文件里收下 {len(out)} 个（{time.time()-t0:.0f} 秒）",
+              file=sys.stderr, flush=True)
     return sorted(out)
 
 
@@ -685,10 +699,12 @@ def cmd_extract(a):
     except ImportError:
         print("[!] 需要 numpy: pip install numpy")
         return 2
+    print(f"扫描 {a.root} …", flush=True)
     files = walk(a.root)
     if not files:
         print(f"[!] {a.root} 下没找到文件。")
         return 1
+    print(f"找到 {len(files)} 个数据文件", flush=True)
     done = set()
     new = not os.path.exists(a.out)
     if not new:                                  # 断点续跑
@@ -696,7 +712,7 @@ def cmd_extract(a):
             with open(a.out, newline="", encoding="utf-8") as fh:
                 for r in csv.DictReader(fh):
                     done.add((r["init_utc"], int(r["fhour"])))
-            print(f"已有 {a.out}，其中 {len(done)} 轮×档已抽过，跳过它们。")
+            print(f"已有 {a.out}，其中 {len(done)} 轮×档已抽过，跳过它们。", flush=True)
         except Exception as e:
             print(f"[warn] 旧文件读不了（{e}），将覆盖重来。")
             new = True
@@ -714,9 +730,9 @@ def cmd_extract(a):
         todo.append((p, g[0], g[1]))
     if a.limit:
         todo = todo[:a.limit]
-    print(f"后端 {kind}   待处理 {len(todo)} 个文件")
+    print(f"后端 {kind}   待处理 {len(todo)} 个文件", flush=True)
     if not todo:
-        print("没有要处理的。")
+        print("没有要处理的。", flush=True)
         return 0
     fh = open(a.out, "a" if not new else "w", newline="", encoding="utf-8")
     w = csv.writer(fh)
