@@ -31,3 +31,7 @@ venv/
 
 # run0_probe 的前瞻记录（本地攒数据，各机器独立）
 run0_probe.sqlite
+
+# GRIB 读取用的独立虚拟环境
+.venv-grib/
+gfs_local.sqlite
