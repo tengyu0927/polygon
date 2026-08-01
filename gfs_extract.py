@@ -313,6 +313,65 @@ def cmd_survey(a):
     return 0
 
 
+# ============================================================ timing
+
+
+def cmd_timing(a):
+    """用文件 mtime 算「每一轮的各时效档，实际什么时候落地」。
+
+    只读文件系统元数据，不需要 GRIB 库，几秒钟出结果。
+
+    为什么关键: 我们想用更新的一轮模式来提前时效 ——
+      前一天 12Z（20:00 起报）-> 给 9:15 起报用，时效 18h
+      当天   00Z（08:00 起报）-> 给 13:15 起报用，时效 6h
+    但 00Z 通常北京时 11:30-13:00 才发布完。**如果它常常在 13:15 之后才落地，
+    那条路就走不通** —— 训练时以为有、上线时取不到，是这个项目最忌讳的错误。
+    这个命令用两年多的真实 mtime 给出答案，而不是靠猜。
+    """
+    files = walk(a.root)
+    if not files:
+        print(f"[!] {a.root} 下没找到文件。")
+        return 1
+    CST8 = timezone(timedelta(hours=8))
+    runs = defaultdict(dict)
+    for p in files:
+        g = parse_name(p)
+        if not g or g[1] > a.fh_max:
+            continue
+        try:
+            mt = os.path.getmtime(p)
+        except OSError:
+            continue
+        runs[g[0]][g[1]] = mt
+    if not runs:
+        print("[!] 没有符合 --fh-max 的文件。")
+        return 1
+    print(f"共 {len(runs)} 轮起报，时效 <= f{a.fh_max}\n")
+    import statistics as st
+    for hh in sorted({k.hour for k in runs}):
+        ks = [k for k in runs if k.hour == hh]
+        print(f"── {hh:02d}Z 轮（{len(ks)} 次）")
+        print(f"  {'时效':<8}{'落地时刻(北京)中位':>20}{'最早':>8}{'最晚':>8}"
+              f"{'>13:15 的比例':>14}")
+        for fh_ in a.probe:
+            got = [runs[k][fh_] for k in ks if fh_ in runs[k]]
+            if not got:
+                print(f"  f{fh_:03d}    （无此档）")
+                continue
+            loc = [datetime.fromtimestamp(t, CST8) for t in got]
+            mins = sorted(x.hour * 60 + x.minute for x in loc)
+            med = mins[len(mins) // 2]
+            late = sum(1 for m in mins if m > 13 * 60 + 15) / len(mins)
+            print(f"  f{fh_:03d}{'':<4}{med//60:>14d}:{med%60:02d}"
+                  f"{mins[0]//60:>6d}:{mins[0]%60:02d}"
+                  f"{mins[-1]//60:>6d}:{mins[-1]%60:02d}{late:>14.1%}")
+        print()
+    print("怎么读这张表:")
+    print("  00Z 轮要给 13:15 起报用 -> 看「>13:15 的比例」，超过 5% 就不能用")
+    print("  12Z 轮要给次日 9:15 用  -> 落地在当天 20-24 时都没问题（次日才用）")
+    return 0
+
+
 # ============================================================ GRIB 后端
 
 def backend():
@@ -709,6 +768,12 @@ def main() -> int:
     s.add_argument("--samples", type=int, default=40, help="抽多少个时间点")
     s.add_argument("--fh-max", type=int, default=48)
     s.set_defaults(fn=cmd_survey)
+    s = sub.add_parser("timing", help="用 mtime 算各时效档实际何时落地")
+    s.add_argument("root")
+    s.add_argument("--fh-max", type=int, default=48)
+    s.add_argument("--probe", type=int, nargs="+", default=[0, 6, 12, 18, 24, 36, 48],
+                   help="探测哪几个时效档")
+    s.set_defaults(fn=cmd_timing)
     s = sub.add_parser("extract", help="抽成 CSV")
     s.add_argument("root")
     s.add_argument("--out", default="gfs_stations.csv")
