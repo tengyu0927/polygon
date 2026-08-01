@@ -178,7 +178,21 @@ python3 wu_check.py --stations ZGSZ --hourly     # 单站逐时明细
    输出里深圳那行不再有「上午云量」备注。
 2. 流浮山 2024-07 前是 8 条/天（三小时一次），临近预报一天都用不了。
    **深圳只有约 2 年可用历史，其余 7 站有 30 年**，所以它走「合并」模型而非分站。
-3. `predict_nowcast.py --live` 从 AWC 取的是深圳宝安 METAR，**必须覆盖** ——
+3. **所有读实况的入口都要跟着换**，否则你盯的和打分的不是一回事:
+
+   | 入口 | 处理 |
+   |---|---|
+   | `predict_nowcast.py --live` | `WU_STATIONS` / `_overwrite_from_wu()` |
+   | **`live_tmax.py`**（实时监看窗口） | 同名机制，`rawOb` 会显示 `WU Lau Fau Shan` |
+   | `run_hourly.sh` / `run_daily.sh` | `iem_multi` 之后紧跟 `wu_obs.py --update` |
+   | **`bootstrap.sh`**（新机器） | 建库后自动 `wu_obs.py --migrate` |
+   | `verify.py` / `taf_compare.py` | 读 `cn.sqlite`，已是 WU 口径 |
+   | `taf_bias.py` | **不改** —— TAF 本就是为宝安机场发的，拿宝安 METAR 对它才对。但它的 ZGSZ 与主链路不是同一个站，别混着比 |
+
+   `live_tmax.py` 之前一直显示的是宝安 METAR: 实测 624 天里 **70% 的日子
+   与 WU 对不上、26% 差 ≥2℃**，等于盯着一个站、被另一个站打分。已修。
+
+4. `predict_nowcast.py --live` 从 AWC 取的是深圳宝安 METAR，**必须覆盖** ——
    已加 `WU_STATIONS` / `_overwrite_from_wu()`，每轮会打印
    `ZGSZ 改用 WU 实况（Lau Fau Shan），当天 N 个小时`。取不到会退回读库并告警，
    绝不静默用 METAR。

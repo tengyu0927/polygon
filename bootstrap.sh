@@ -44,7 +44,15 @@ else
     python3 iem_multi.py --db cn.sqlite --stations "$STATIONS" \
         --backfill --min-year 1995
 fi
+
+# ZGSZ 换成 WU 的序列。**这一步不能省** —— 最终对错以 WU 页面的日最高温为准，
+# 而 WU 的 ZGSZ 页面挂的是香港流浮山（WMO 45035，离深圳宝安 30km）。
+# 不换的话，新机器上深圳会用宝安 METAR 训练、被流浮山打分，
+# 实测 624 天里 70% 的日子对不上、26% 差 >=2℃。详见 wu_obs.py
+echo "--- ZGSZ 换用 WU 实况（香港流浮山）---"
+python3 wu_obs.py --db cn.sqlite --migrate
 python3 iem_multi.py --db cn.sqlite --daily
+python3 wu_check.py --db cn.sqlite --days 30 || true
 
 if [ -n "$OBS_ONLY" ]; then
     echo "只建了实况库。12-15 时的纯实况模型已经能用:"

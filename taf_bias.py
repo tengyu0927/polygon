@@ -9,6 +9,12 @@ taf_bias.py — 回补 15 天 TAF + METAR，分站分轮次算偏差，并交叉
     python3 taf_bias.py --days 7           # 只回补 7 天，先试试
     python3 taf_bias.py --analyze-only     # 已回补过，只重跑分析
 
+**ZGSZ 注意**: 本脚本用 AWC 的深圳宝安 METAR，这是**对的** ——
+TAF 本来就是为宝安机场发的，拿宝安实况对它才有意义。
+但要清楚: 主预报链路（predict_nowcast / live_tmax / cn.sqlite 里的 ZGSZ）
+已改用 WU 的香港流浮山序列（见 wu_obs.py），因为最终打分以 WU 为准。
+所以本脚本的 ZGSZ 数字与主链路的不是同一个站，别混着比。
+
 核心问题: TAF 的 TX 相对实况日最高温，偏差是不是稳定的？
          如果稳定，减掉它能不能让预报更准？
 

@@ -49,6 +49,8 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) or ".")
+
 API = "https://aviationweather.gov/api/data/metar"
 UA = "live-tmax-monitor/1.0 (station monitoring; contact: local user)"
 
@@ -122,6 +124,48 @@ def fetch(stations, timeout=20, retries=3, hours=None):
     if hours:
         for sid in out:
             out[sid].sort(key=lambda x: x.get("obsTime") or 0)
+
+    # 深圳必须换成 WU 的序列 —— 见下方 WU_STATIONS 说明
+    for sid in WU_STATIONS & set(stations):
+        try:
+            wu = fetch_wu(sid, hours or 1)
+        except Exception as e:                       # noqa: BLE001
+            sys.stderr.write("  ! %s 取 WU 失败(%s)，这一行仍是宝安 METAR，"
+                             "与 WU 页面会对不上\n" % (sid, e))
+            continue
+        if not wu:
+            continue
+        out[sid] = wu if hours else wu[-1]
+    return out
+
+
+# 这些站看的是 WU 的序列，不是 AWC 的 METAR。
+# WU 的 ZGSZ:9:CN 返回的是 Lau Fau Shan（香港流浮山，WMO 45035），
+# 离深圳宝安 30km。最终对错以 WU 为准，模型也训练在这条序列上（见 wu_obs.py），
+# 所以这个监看窗口必须跟着换，否则你盯的当日最高温和打分用的不是一回事 ——
+# 实测 624 天里 70% 的日子对不上，26% 差 >=2℃。
+WU_STATIONS = {"ZGSZ"}
+
+
+def fetch_wu(sid, hours):
+    """取 WU 最近 hours 小时的观测，转成与 AWC 相同的字段名。"""
+    import wu_obs as WO
+    now = datetime.now(CN_TZ)
+    days = {(now - timedelta(hours=h)).strftime("%Y%m%d")
+            for h in (0, max(0, hours))}
+    out = []
+    for d in sorted(days):
+        for x in WO.wu_obs(sid, d, d, retries=2):
+            if x.get("temp") is None:
+                continue
+            ts = x["valid_time_gmt"]
+            if ts < now.timestamp() - hours * 3600 - 60:
+                continue
+            out.append({"icaoId": sid, "obsTime": ts, "temp": float(x["temp"]),
+                        "dewp": x.get("dewPt"),
+                        "rawOb": "WU %s %s" % (x.get("obs_name") or "",
+                                               x.get("wx_phrase") or "")})
+    out.sort(key=lambda x: x["obsTime"])
     return out
 
 
