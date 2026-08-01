@@ -92,6 +92,18 @@ CONV_COLS = {"precipitation_max", "precipitation_peakmean",
              "lifted_index_max", "lifted_index_peakmean"}
 
 
+def _pred_rows(mte, pred_arch, prefer):
+    """--pred 的输出必须来自 prefer 选中的架构，否则诊断的是不上线的模型。"""
+    src = pred_arch.get(prefer) or pred_arch.get("pooled") or {}
+    out = []
+    for m in mte:
+        p = src.get((m[0], m[1]))
+        if p is None:
+            continue
+        out.append((m[0], m[1], round(p, 2), round(p), m[2]))
+    return out
+
+
 def feature_names(rows: list[dict]) -> list[str]:
     """自动识别数值特征列，排除标识列和真值。"""
     skip = {"station", "date", "lead", "y_tmax"}
@@ -361,6 +373,10 @@ def run_lead(rows, lead, args):
     pte = ridge_pred(mdl, Xte)
     e_ridge = [p + b - t for p, b, t in zip(pte, bte, truth)]
     key_te = [(m[0], m[1]) for m in mte]
+    # 各架构的测试期预报值。--pred 必须写 prefer 选中的那一个 ——
+    # 2026-08-01 查出它一直只写岭回归(pte)，与上线的融合不是同一个模型，
+    # 导致所有基于 pred.csv 的诊断都在分析一个不上线的模型。
+    pred_arch = {"pooled": dict(zip(key_te, [p + b for p, b in zip(pte, bte)]))}
     err_by = {"岭回归(合并)": dict(zip(key_te, e_ridge))}
     show(f"岭回归 (alpha={alpha:g})", sc(e_ridge))
     show("  取整后（上线口径）", sc([round(p + b) - t for p, b, t in zip(pte, bte, truth)]))
@@ -374,7 +390,7 @@ def run_lead(rows, lead, args):
                    for p, b, r in zip(ridge_pred(mdl, Xva), bva, va)) / len(va)
                if va else None)
     va_per_err = []
-    e_per, ok, per_models = [], True, {}
+    e_per, ok, per_models, pred_per = [], True, {}, {}
     for s in stations:
         trs = [r for r in tr if r["station"] == s]
         vas = [r for r in va if r["station"] == s]
@@ -404,11 +420,13 @@ def run_lead(rows, lead, args):
         pt = ridge_pred(bb[2], Xt)
         e_per += [((m[0], m[1]), p + b - m[2], round(p + b) - m[2])
                   for p, b, m in zip(pt, bt, mt)]
+        pred_per.update({(m[0], m[1]): p + b for p, b, m in zip(pt, bt, mt)})
     if e_per:
         show("分站岭回归", sc([x[1] for x in e_per]))
         show("  取整后（上线口径）", sc([x[2] for x in e_per]))
         err_by["岭回归(分站)"] = {k: v for k, v, _ in e_per}
         results["ridge_per"] = per_models
+        pred_arch["per_station"] = pred_per
         if va_pool is not None and va_per_err:
             va_per = sum(va_per_err) / len(va_per_err)
             results["va_pool"], results["va_per"] = va_pool, va_per
@@ -478,6 +496,7 @@ def run_lead(rows, lead, args):
             # 分站可能以微弱优势胜出，却把明显更好的融合挡在门外
             results["va_blend"] = bmae
             pbl = [bw * pr_ + (1 - bw) * pg_ for pr_, pg_ in zip(pte, pte2)]
+            pred_arch["blend"] = dict(zip(key_te, [p + b for p, b in zip(pbl, bte)]))
             show(f"融合 (岭回归 w={bw:g})",
                  sc([round(p + b) - t for p, b, t in zip(pbl, bte, truth)]), "  <- 上线用这个")
             err_by["岭回归+GBM 融合"] = dict(zip(key_te,
@@ -566,8 +585,7 @@ def run_lead(rows, lead, args):
             "gbm_obj": results.get("gbm_obj"), "blend_w": results.get("blend_w"),
             "per_station": results.get("ridge_per"),
             "feats": feats, "stations": stations, "med": med,
-            "pred": [(m[0], m[1], round(p + b, 2), round(p + b), m[2])
-                     for p, b, m in zip(pte, bte, mte)]}
+            "pred": _pred_rows(mte, pred_arch, results.get("prefer", "pooled"))}
 
 
 def main() -> int:
