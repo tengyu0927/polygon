@@ -256,6 +256,41 @@ def daily_features(conn, lead) -> dict:
                 # 傍晚相对午后均值: 正说明高温维持到傍晚
                 f["t2m_late_minus_peak"] = (None if (not late or pm is None)
                                             else sum(late) / len(late) - pm)
+            # 逐时廓线特征（2026-08-01 加）。见顶时刻由「能量输入什么时候停」
+            # 决定，而这件事在**短波辐射**的逐时廓线里最直接 —— 云量常年饱和在
+            # 100%（广州 2026-07-20 整个下午都是 100，毫无信息），
+            # 而同一天辐射从 13 时的 744 骤降到 14 时 471、15 时 282。
+            # 之前只喂 cloud_cover_peakmean / shortwave_radiation_peakmean 两个
+            # 时段均值，等于把决定见顶时刻的那条曲线压成了一个数。
+            if var == "shortwave_radiation":
+                by_h = {}
+                for h, v in pts:
+                    by_h[h] = max(v, by_h.get(h, -99))
+                day = {h: v for h, v in by_h.items() if 8 <= h <= 19}
+                if day:
+                    mx = max(day.values())
+                    f["swrad_peak_h"] = min(h for h, v in day.items()
+                                            if v >= mx - 1e-9)
+                    if mx > 1:
+                        # 辐射跌到峰值一半的时刻 ≈ 加热停止的时刻
+                        aft = sorted(h for h in day if h > f["swrad_peak_h"]
+                                     and day[h] < mx * 0.5)
+                        f["swrad_half_h"] = aft[0] if aft else None
+                        late = [day[h] for h in day if 15 <= h <= 17]
+                        f["swrad_late_frac"] = (sum(late) / len(late) / mx
+                                                if late else None)
+                    a, b = day.get(12), day.get(16)
+                    f["swrad_slope_pm"] = (None if (a is None or b is None)
+                                           else (b - a) / 4)
+            if var == "cloud_cover":
+                by_h = {}
+                for h, v in pts:
+                    by_h[h] = max(v, by_h.get(h, -99))
+                aft = sorted(h for h in by_h if 10 <= h <= 19 and by_h[h] >= 70)
+                f["cld_onset_h"] = aft[0] if aft else None
+                a, b = by_h.get(12), by_h.get(16)
+                f["cld_slope_pm"] = (None if (a is None or b is None)
+                                     else (b - a) / 4)
         if f.get("temperature_2m_max") is not None:
             out[key] = f
     return out

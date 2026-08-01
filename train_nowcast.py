@@ -149,6 +149,24 @@ if os.environ.get("PLOYGON_CONV") == "1":
     })
     FEATS.extend(["nwp_precip_peak", "nwp_precip_max",
                   "nwp_cape_peak", "nwp_li_peak"])
+# 模式的逐时廓线特征（A/B 测试中）。设 PLOYGON_PROF=1 打开。
+# 物理动机: 见顶时刻由「能量输入什么时候停」决定，这件事在短波辐射的逐时
+# 廓线里最直接 —— 云量常年饱和在 100%（广州 2026-07-20 整个下午都是 100，
+# 毫无信息），而同一天辐射从 13 时的 744 骤降到 14 时 471、15 时 282。
+# 原来只喂 cloud_cover_peakmean / shortwave_radiation_peakmean 两个时段均值，
+# 等于把决定见顶时刻的那条曲线压成了一个数。
+if os.environ.get("PLOYGON_PROF") == "1":
+    NWP_COLS.update({
+        "nwp_swrad_peak_h": "swrad_peak_h",
+        "nwp_swrad_half_h": "swrad_half_h",
+        "nwp_swrad_late_frac": "swrad_late_frac",
+        "nwp_swrad_slope_pm": "swrad_slope_pm",
+        "nwp_cld_onset_h": "cld_onset_h",
+        "nwp_cld_slope_pm": "cld_slope_pm",
+    })
+    FEATS.extend(["nwp_swrad_peak_h", "nwp_swrad_half_h", "nwp_swrad_late_frac",
+                  "nwp_swrad_slope_pm", "nwp_cld_onset_h", "nwp_cld_slope_pm"])
+
 # 试过没赢: 模式的午后温度廓线（峰值时刻 t2m_peak_h、12->16 时升温速率
 # t2m_slope_pm、傍晚相对午后均值 t2m_late_minus_peak，均已在
 # build_mos_dataset.daily_features 里算好，csv 里有，只是不进特征表）。
