@@ -363,31 +363,45 @@ def cmd_timing(a):
     print(f"共 {len(runs)} 轮起报，时效 <= f{a.fh_max}")
     print("落地滞后 = 文件 mtime - 起报时刻。用滞后而不是时钟时刻，")
     print("因为 12Z 轮落在午夜前后，按时钟比较会跨零点、得出假结论。\n")
+    # 每个起报时刻（北京时）需要的可用窗口 = 起报时刻 - 模式起报时刻
+    #   00Z 轮 = 北京 08:00 起报 -> 当天各时刻的窗口 = 时刻 - 8h
+    #   12Z 轮 = 北京 20:00 起报 -> 次日各时刻的窗口 = 时刻 + 4h
+    CUTS = [9.25, 10.25, 11.25, 12.25, 13.25, 14.25, 15.25]
     for hh in sorted({k.hour for k in runs}):
         ks = [k for k in runs if k.hour == hh]
-        # 该轮次要服务的起报时刻: 00Z(北京08:00)->当天13:15; 12Z(北京20:00)->次日09:15
-        if hh == 0:
-            need_h, tag = 5.25, "当天 13:15 起报"
-        elif hh == 12:
-            need_h, tag = 13.25, "次日 09:15 起报"
-        else:
-            need_h, tag = 6.0, "参考"
-        print(f"── {hh:02d}Z 轮（{len(ks)} 次）  要服务 {tag}，"
-              f"可用窗口 = 起报后 {need_h} 小时内")
-        print(f"  {'时效':<8}{'滞后中位':>10}{'90分位':>9}{'最大':>9}"
-              f"{'超窗比例':>10}")
+        init_local = (hh + 8) % 24                 # 模式起报的北京时刻
+        print(f"── {hh:02d}Z 轮（{len(ks)} 次，北京时 {init_local:02.0f}:00 起报）")
+        lag = {}
         for fh_ in a.probe:
-            got = [(runs[k][fh_] - k.timestamp()) / 3600.0
-                   for k in ks if fh_ in runs[k]]
-            if not got:
-                print(f"  f{fh_:03d}    （无此档）")
+            v = sorted((runs[k][fh_] - k.timestamp()) / 3600.0
+                       for k in ks if fh_ in runs[k])
+            if v:
+                lag[fh_] = v
+        if not lag:
+            print("  （无数据）\n")
+            continue
+        k0 = max(lag)
+        print(f"  落地滞后（起报后几小时）: 中位 {lag[k0][len(lag[k0])//2]:.1f}h  "
+              f"90分位 {lag[k0][int(len(lag[k0])*.9)]:.1f}h  最大 {lag[k0][-1]:.1f}h"
+              f"   （以最长档 f{k0:03d} 计）")
+        print(f"\n  各起报时刻的可用率（该轮在那时已落地的天数占比）")
+        print(f"  {'起报(北京)':<12}" + "".join(f"f{f:03d}".rjust(8) for f in a.probe))
+        for c in CUTS:
+            # 该轮对这个起报时刻的可用窗口
+            if hh == 0:
+                win = c - 8.0                      # 当天用
+            else:
+                win = c + 24.0 - 20.0              # 次日用
+            if win <= 0:
                 continue
-            got.sort()
-            over = sum(1 for x in got if x > need_h) / len(got)
-            flag = "  <- 超标" if over > 0.05 else ""
-            print(f"  f{fh_:03d}{'':<4}{got[len(got)//2]:>9.1f}h"
-                  f"{got[int(len(got)*.9)]:>8.1f}h{got[-1]:>8.1f}h"
-                  f"{over:>10.1%}{flag}")
+            row = f"  {int(c):02d}:{int(round((c%1)*60)):02d} 起报{'':<3}"
+            for f in a.probe:
+                v = lag.get(f)
+                if not v:
+                    row += "--".rjust(8); continue
+                ok = sum(1 for x in v if x <= win) / len(v)
+                row += f"{ok:.0%}".rjust(8)
+            print(row + f"   窗口 {win:.2f}h")
         print()
     print("怎么读这张表:")
     print("  「超窗比例」= 该档在需要它的那个起报时刻还没落地的天数占比。")
