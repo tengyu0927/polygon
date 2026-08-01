@@ -99,6 +99,13 @@ CONV_COLS = {"precipitation_max", "precipitation_peakmean",
 PROF_COLS = {"swrad_peak_h", "swrad_half_h", "swrad_late_frac",
              "swrad_slope_pm", "cld_onset_h", "cld_slope_pm"}
 
+# 多窗口偏差（2026-08-01 的第 15 次尝试）。同样**实测未采用**，同样必须排除:
+# recent_bias(7 天)是全模型权重最高的特征(+0.631),但加 3/14/30 天窗口＋趋势
+# ＋离散度之后 D+2 从 1.1447 涨到 1.1611(P=6%),全部 P=9%。
+# 7 天这个窗口已经是对的,加更多只增加方差。设 PLOYGON_BIASW=1 可重测。
+BIASW_COLS = {"recent_bias_3", "recent_bias_14", "recent_bias_30",
+              "bias_trend", "bias_sd_7"}
+
 
 def _pred_rows(mte, pred_arch, prefer):
     """--pred 的输出必须来自 prefer 选中的架构，否则诊断的是不上线的模型。"""
@@ -119,6 +126,8 @@ def feature_names(rows: list[dict]) -> list[str]:
         skip |= CONV_COLS
     if os.environ.get("PLOYGON_PROF") != "1":
         skip |= PROF_COLS
+    if os.environ.get("PLOYGON_BIASW") != "1":
+        skip |= BIASW_COLS
     names = sorted({k for r in rows for k in r} - skip)
     return names
 

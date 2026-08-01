@@ -201,7 +201,7 @@ def check_mos(args):
             rep(not miss, f"{tag} {cut} 时含全部 8 站",
                 "" if not miss else f"缺: {miss}（重训漏了 --split-year 2025？）")
 
-    leaked = sorted((TM.CONV_COLS | TM.PROF_COLS) & feats)
+    leaked = sorted((TM.CONV_COLS | TM.PROF_COLS | TM.BIASW_COLS) & feats)
     rep(not leaked, "被否决的实验特征没混进 MOS 上线模型",
         "" if not leaked else f"泄漏: {leaked}")
     # 临近预报侧同理。跨站特征更危险: predict_nowcast.py 根本没有算它们的代码，

@@ -369,11 +369,41 @@ def cmd_build(args):
                 back += 1
             bias = sum(resid) / len(resid) if len(resid) >= args.bias_days // 2 else None
 
+            # 多窗口偏差（2026-08-01 加）。recent_bias 是 D+1 模型里权重最高的
+            # 特征（标准化系数 +0.631），但它只有 7 天一个窗口、一个简单均值。
+            # 天气型的持续时间不是固定 7 天 —— 短窗口跟得快但噪声大，
+            # 长窗口稳但滞后。多给几个让模型自己挑，再给两个「这个偏差可不可靠」
+            # 的量: 趋势（在扩大还是收敛）和离散度（最近几天错得一致不一致）。
+            resid_long = []
+            back = 1
+            while len(resid_long) < 30 and back <= 60:
+                bd = issue_day - timedelta(days=back - 1)
+                o = obs.get((stn, bd.isoformat()))
+                m = feats.get((stn, bd.isoformat()), {}).get("temperature_2m_max")
+                if o is not None and m is not None:
+                    resid_long.append(o - m)
+                back += 1
+            bw = {}
+            for w in (3, 14, 30):
+                v = resid_long[:w]
+                bw[f"recent_bias_{w}"] = (round(sum(v) / len(v), 3)
+                                          if len(v) >= max(2, w // 2) else None)
+            b3, b14 = bw.get("recent_bias_3"), bw.get("recent_bias_14")
+            # 趋势: 近 3 天比近 14 天更偏，说明偏差正在扩大
+            bw["bias_trend"] = (None if (b3 is None or b14 is None)
+                                else round(b3 - b14, 3))
+            v7 = resid_long[:7]
+            # 离散度: 最近几天的误差方向一致吗？大 = 这个偏差不可信
+            bw["bias_sd_7"] = (round((sum((x - sum(v7) / len(v7)) ** 2
+                                          for x in v7) / len(v7)) ** .5, 3)
+                               if len(v7) >= 4 else None)
+
             doy = dt.timetuple().tm_yday
             rec = {
                 "station": stn, "date": d, "lead": lead, "y_tmax": y,
                 "prev_tmax": prev,
                 "recent_bias": None if bias is None else round(bias, 3),
+                **bw,
                 "doy_sin1": round(math.sin(2 * math.pi * doy / 365.25), 4),
                 "doy_cos1": round(math.cos(2 * math.pi * doy / 365.25), 4),
                 "doy_sin2": round(math.sin(4 * math.pi * doy / 365.25), 4),

@@ -144,6 +144,10 @@ PYCHK
     echo
     python3 taf_compare.py --pred pred_mos.csv \
         --db "${PLOYGON_TAF_DB:-taf_compare.sqlite}" || true
+    # 回填往日的实况。不做这一步，pair 表的 obs 永远是 NULL，
+    # 两周后想判断「TAF 值不值得当特征」时手上没有可用数据。
+    python3 taf_compare.py --analyze --obs-db cn.sqlite \
+        --db "${PLOYGON_TAF_DB:-taf_compare.sqlite}" >/dev/null 2>&1 || true
 
     # 把当天的「预报 vs 实况」累计入库。23:59 跑，当天实况已定型。
     # 目的是找站级系统性偏差 —— 通用判读规则在小样本上表现参差，
