@@ -77,6 +77,11 @@ if [[ -z "$NOFETCH" ]]; then
         USE_LIVE=--live
     fi
 
+    # 前瞻记录「这个时刻实际能取到的最新一轮模式」。不参与预报，
+    # 只为判定 previous_day0 能不能拿来训练（见 run0_probe.py 的说明）。
+    # 失败不影响本轮预报。
+    python3 run0_probe.py --db run0_probe.sqlite --cutoff "$HOUR" --log >/dev/null 2>&1 || true
+
     # 这里**不**再重建 mos_*.csv。predict_nowcast.py 的模式特征是自己联网取的
     # （fetch_nwp / fetch_m2），压根不读 csv —— 每小时重建一遍纯属浪费:
     # 多花约 1 分钟、API 请求翻倍、对预报没有任何影响。

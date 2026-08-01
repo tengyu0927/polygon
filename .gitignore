@@ -28,3 +28,6 @@ venv/
 # ---- 模型备份（当前模型要进仓库，历史备份不要）----
 *.json.bak
 *.json.bak[0-9]
+
+# run0_probe 的前瞻记录（本地攒数据，各机器独立）
+run0_probe.sqlite
