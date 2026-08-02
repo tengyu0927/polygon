@@ -37,3 +37,5 @@ run0_probe.sqlite
 gfs_local.sqlite
 mos_local6.csv
 mos_local18.csv
+gfs18.csv
+gfs18*.csv.gz
