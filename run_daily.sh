@@ -63,10 +63,15 @@ if [[ -z "$NOUPDATE" ]]; then
     # 核对实测口径。最终对错以 WU 为准，训练/检验的实况必须和它一致 ——
     # WU 随时可能改站点映射（2026-08-01 就发现 ZGSZ 挂的是香港流浮山）。
     # 只打警告，不中断当天的预报。
-    _wu=$(python3 wu_check.py --db cn.sqlite --days 7 2>/dev/null | tail -30)
+    # 14 天而不是 7 天: 判据用了均值和「差≥2度的比例」，7 天里单独一天差 2 度
+    # 就占 14%，会误报。14 天让单点噪声降到 7%，均值的标准误也减半。
+    _wu=$(python3 wu_check.py --db cn.sqlite --days 14 2>/dev/null | tail -30)
     if echo "$_wu" | grep -q "不一致的站"; then
         echo "[WARN] 实测与 WU 对不上:" >&2
         echo "$_wu" | grep -A2 "不一致的站" >&2
+    elif echo "$_wu" | grep -q "没核上"; then
+        echo "[warn] WU 口径这轮没核上（取数失败，非不一致）:" >&2
+        echo "$_wu" | grep -A1 "没核上" >&2
     fi
 fi
 
@@ -107,17 +112,35 @@ if [[ -z "$NOUPDATE" ]]; then
         python3 build_mos_dataset.py build --db "$db.sqlite" --obs-db cn.sqlite \
             --daily-table daily --out "$out" >/dev/null 2>&1 || true
     done
+    # 合并成 mos_multi.csv。**这一步同样不能省** —— 2026-08-03 查出上面那个
+    # 循环每天都在更新 6 个单模式 csv，但合并从来没跑过，mos_multi.csv
+    # 停在 07-31。临近重训读单模式 csv 所以没中招，但 D+1/D+2 重训只读
+    # mos_multi.csv，会静默训在陈旧数据上（和 07-31 的事故同一类）。
+    # --extra 的顺序必须与上面 MODELS 一致，否则 m2_/m3_ 各列对错模式。约 18 秒。
+    python3 merge_mos.py --base mos.csv --extra mos_ecmwf.csv mos_cma.csv \
+        mos_icon.csv mos_jma_.csv mos_gem_.csv --deb --out mos_multi.csv \
+        >/dev/null 2>&1 || echo "  [warn] mos_multi.csv 合并失败，D+1/D+2 重训会用到陈旧数据" >&2
 fi
 
 # 模型过期检查。训练数据每天更新了，但权重要人工重训 ——
 # 超过 7 天不重训就大声提醒，别再让它默默漂移
 python3 - <<'PYCHK' >&2
-import os, time, csv, collections
+import os, time, csv, datetime, collections
 try:
     age = (time.time() - os.path.getmtime("nowcast_nwp.json")) / 86400
     d = collections.Counter(r["date"] for r in csv.DictReader(open("mos_multi.csv"))
                             if r.get("lead") == "1" and r.get("y_tmax"))
     print(f"[info] 模型已训练 {age:.1f} 天，训练集最新 {max(d) if d else '?'}")
+    # 训练集滞后必须是响的。2026-07-31 停 5 天、2026-08-03 停 2 天，两次都是
+    # 因为这行只打印日期、没人会注意。23 时跑滞后 0 天，跨午夜跑滞后 1 天，
+    # 都正常；>=2 天说明上面的刷新或合并那步在失败。
+    if d:
+        cst = datetime.timezone(datetime.timedelta(hours=8))
+        lag = (datetime.datetime.now(cst).date()
+               - datetime.date.fromisoformat(max(d))).days
+        if lag >= 2:
+            print(f"[WARN] mos_multi.csv 滞后 {lag} 天（最新 {max(d)}）。"
+                  f"重训会训在陈旧数据上 —— 先查上面刷新/合并那步是不是在报 warn。")
     if age > 7:
         print(f"[WARN] 模型 {age:.0f} 天没重训了。天气型漂移会让精度慢慢下降，"
               f"建议跑:\n"

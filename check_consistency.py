@@ -23,6 +23,7 @@ import argparse
 import csv
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime, timedelta
@@ -272,7 +273,12 @@ def check_scripts(args):
 
     r = subprocess.run(["./run_hourly.sh", str(args.cutoff)],
                        env=CRON_ENV, capture_output=True, text=True, timeout=1800)
-    rows = [l for l in r.stdout.splitlines() if l.startswith("  Z")]
+    # 只认真正的站行: ICAO + 站名 + 数值列。光看 startswith("  Z") 会把提示行
+    # 也数进去（"  ZGSZ 改用 WU 实况…" 就让这里数出 9 个站，误报了一整轮）。
+    # 数值列必须同时认数字和 "--" —— 观测不足时整行是 "--"，只认数字的话
+    # 半夜跑这项会数出 0 个站，等于把误报从 9 换成了 0。
+    rows = [l for l in r.stdout.splitlines()
+            if re.match(r"^  Z[A-Z]{3}\s+\S+\s+(-?\d|--)", l)]
     rep(r.returncode == 0 and len(rows) == 8,
         "run_hourly.sh 在 cron 环境下完整跑通",
         f"退出码 {r.returncode}，输出 {len(rows)} 个站"
@@ -366,9 +372,8 @@ def main() -> int:
     ap.add_argument("--mos-model", default="model.json")
     ap.add_argument("--mos-csv", default="mos_multi.csv")
     ap.add_argument("--nwp-csv", default="mos.csv")
-    ap.add_argument("--nwp-csv2", nargs="+",
-                    default=["mos_ecmwf.csv", "mos_cma.csv", "mos_icon.csv",
-                             "mos_jma_.csv", "mos_gem_.csv"])
+    # 默认留空，parse 之后按时次补第 7 个成员（本地 GFS）—— 见下面
+    ap.add_argument("--nwp-csv2", nargs="+", default=None)
     ap.add_argument("--extra-models",
                     default="ecmwf_ifs025,cma_grapes_global,icon_global,"
                             "jma_gsm,gem_global")
@@ -378,6 +383,15 @@ def main() -> int:
     ap.add_argument("--skip-scripts", action="store_true",
                     help="跳过入口脚本实跑（那项要联网、约 1 分钟）")
     args = ap.parse_args()
+    if args.nwp_csv2 is None:
+        # 第 7 个集合成员（本地 GFS）必须按时次配时效，和训练时一模一样:
+        # 9-11 时用前一天 12Z 的 18 小时，12-13 时用当天 00Z 的 6 小时。
+        # 上线时漏了这一步，检查只喂 5 个追加模式，于是天天报「缺 m7_*」——
+        # 生产其实是好的（run_hourly 传了 local_gfs），是检查自己没跟上。
+        args.nwp_csv2 = ["mos_ecmwf.csv", "mos_cma.csv", "mos_icon.csv",
+                         "mos_jma_.csv", "mos_gem_.csv",
+                         "mos_local18.csv" if args.cutoff <= 11
+                         else "mos_local6.csv"]
     if not args.date:
         args.date = (datetime.now().date() - timedelta(days=2)).isoformat()
 

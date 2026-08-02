@@ -137,16 +137,29 @@ def main() -> int:
     print(f"\n日最高温: WU vs 我们（{a} ~ {b}）\n")
     print(f"  {'站':<10}{'n':>5}{'完全相同':>10}{'差1度':>8}{'差≥2度':>9}"
           f"{'平均差':>9}{'标准差':>8}{'最大差':>8}")
-    bad = []
+    # 判据检的是「会毁掉训练的东西」，不是「完全一样」。会毁掉训练的只有两种:
+    #   1. 固定偏差 —— 训练标签比打分标签系统性高/低，模型学进去就改不掉
+    #   2. 大幅分歧 —— 挂错站（2026-08-01 的 ZGSZ 就是: 30% 相同、26% 差≥2度）
+    # 差 1 度的零星分歧不属于任何一种: ZGSZ 改用 WU 之后 30 天 93% 相同、
+    # 7% 差 1 度、平均差 +0.00 —— 那是 WU 的日最高按次时次观测算、我们按逐时
+    # 序列算的取样差，对称无偏，消不掉也不需要消。按老判据（相同 <95%）它天天
+    # 报警，而一个天天响的警告等于没有警告（mos_multi.csv 停更两天没人发现，
+    # 就是被这类噪声淹的）。相同率仍然打印，只是不再升级成 WARN。
+    BIAS_MAX, GROSS_MAX = 0.30, 0.10
+    bad, noisy, absent = [], [], []
     for s in stations:
         ks = sorted(d for (ss, d) in W if ss == s and (s, d) in O)
         if not ks:
             print(f"  {NAMES.get(s, s):<9} 无数据")
+            absent.append(s)
             continue
         df = [W[(s, d)] - O[(s, d)] for d in ks]
         same = sum(1 for x in df if x == 0) / len(ks)
-        if same < 0.95:
+        gross = sum(1 for x in df if abs(x) >= 2) / len(ks)
+        if abs(st.mean(df)) >= BIAS_MAX or gross >= GROSS_MAX:
             bad.append(s)
+        elif same < 0.95:
+            noisy.append(s)
         print(f"  {NAMES.get(s, s):<9}{len(ks):>5}{same:>10.0%}"
               f"{sum(1 for x in df if abs(x) == 1) / len(ks):>8.0%}"
               f"{sum(1 for x in df if abs(x) >= 2) / len(ks):>9.0%}"
@@ -163,8 +176,19 @@ def main() -> int:
     if bad:
         print(f"\n  不一致的站: {', '.join(NAMES.get(s, s) for s in bad)}")
         print(f"  这些站训练用的实况与打分用的实况不是一回事，模型会留下改不掉的偏差。")
+    elif absent:
+        # 取不到数不等于对得上。WU 连着问会限流，整批空返回时老版本照样打印
+        # 「全部一致」—— 那是把取数失败当成了全清。
+        print(f"\n  没核上（WU 取不到数，多半是限流）: "
+              f"{', '.join(NAMES.get(s, s) for s in absent)}")
+        print(f"  这轮没有结论，不是「一致」。")
     else:
         print(f"\n  全部一致。训练/检验用的实况与 WU 打分口径相同。")
+    if noisy:
+        # 无偏的取样噪声。不影响训练，也不用处理，但保留可见性 ——
+        # 万一哪天它开始往一边偏，上面的判据会接手。
+        print(f"  [注] 有零星 1 度分歧但无系统偏差: "
+              f"{', '.join(NAMES.get(s, s) for s in noisy)}（取样差，不影响训练）")
 
     if args.hourly:
         for s in stations:
