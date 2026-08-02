@@ -251,10 +251,16 @@ def check_mos(args):
 
 # ---------------------------------------------------------------- 入口脚本
 
+# 实跑会真的出预报、真的写库，所以每个落盘的去处都必须改道到临时文件。
+# PLOYGON_VERIFY_DB 原来漏了 —— 检查一跑就把预报写进真的 verify.sqlite，
+# 于是「00:13 的 cron 结果」和「01:35 的检查实跑」在库里混成一份，
+# 武汉 08-03 在 verify.sqlite 里是 38、在 pred_mos.csv 里是 37。
+# 检验库是判断规则对错的唯一依据，绝不能掺进检查跑出来的行。
 CRON_ENV = {"PATH": "/opt/homebrew/bin:/usr/bin:/bin",
             "HOME": os.environ.get("HOME", ""),
             "PLOYGON_LOG": "/tmp/_check_run.log",
-            "PLOYGON_TAF_DB": "/tmp/_check_taf.sqlite"}
+            "PLOYGON_TAF_DB": "/tmp/_check_taf.sqlite",
+            "PLOYGON_VERIFY_DB": "/tmp/_check_verify.sqlite"}
 
 
 def check_scripts(args):
