@@ -184,6 +184,28 @@ def check_mos(args):
     import train_mos as TM
     import train_nowcast as TN
 
+    # gfs_live 预测时选的时效，必须与训练该时次时用的时效一致。
+    # 2026-08-02 踩过: lag_h 写成 4.5,12:15 被踢到 18h,而 12 时的模型
+    # 是拿 6h 训的 —— 静默错配,不报错、只是慢慢变差。
+    try:
+        import gfs_live as GL
+        import datetime as _dt
+        want = {9: 18, 10: 18, 11: 18, 12: 6, 13: 6}
+        tgt = _dt.date.today() + _dt.timedelta(days=1)
+        bad = []
+        for cut, lead in want.items():
+            cand = GL.pick_run(cut, tgt)
+            got = None
+            if cand:
+                peak = _dt.datetime.combine(tgt, _dt.time(6), _dt.timezone.utc)
+                got = round((peak - cand[0][0]).total_seconds() / 3600)
+            if got != lead:
+                bad.append(f"{cut}时: 预测选{got}h/训练{lead}h")
+        rep(not bad, "gfs_live 各时次选的时效与训练一致",
+            "" if not bad else "; ".join(bad))
+    except Exception as e:                            # noqa: BLE001
+        rep(False, "gfs_live 时效一致性检查", f"{type(e).__name__}: {str(e)[:60]}")
+
     # 8 个站一个都不能少。2026-08-01 踩过: ZGSZ 换成 WU 序列后只剩 2024-07 起
     # 的数据，而 climatology() 用 --split-year（默认 2024）卡训练年份，
     # 导致 ZGSZ 在气候态里为空 -> 整个站被静默丢掉，预报表少一行也不报错。

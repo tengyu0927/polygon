@@ -98,10 +98,21 @@ def http(url, rng=None, retries=3, timeout=60):
 TRAINED_LEADS = {6, 18, 30, 42}
 
 
-def pick_run(cutoff_h, target: datetime.date, lag_h=4.5, match_lead=True):
+# 落地滞后的判定阈值。实测（用户归档 848 次 00Z / 854 次 12Z 的文件 mtime）
+# 00Z 的 f000~f018 落地中位是起报后 3.9~4.0 小时（北京时 11:53~12:00）。
+#
+# **这个值必须与训练时用的时效逐档对上**，否则就是训练/预测口径不一致:
+#   4.25 -> 9/10/11 时选 18h、12/13 时选 6h  <- 与训练一致（当前）
+#   4.5  -> 12 时被踢到 18h，而 12 时的模型是拿 6h 训的 -> 错配
+# 2026-08-02 一开始写的 4.5 就是错的，被这条注释挡住的正是那个坑。
+LAG_H = 4.25
+
+
+def pick_run(cutoff_h, target: datetime.date, lag_h=LAG_H, match_lead=True):
     """按起报时刻选「那时能拿到的最新一轮」。
 
-    lag_h 是落地滞后的保守值（实测中位约 4.0h，这里留 0.5h 余量）。
+    lag_h 见上方 LAG_H 的说明 —— 改它等于改「哪个时次用哪个时效」，
+    必须同步重训，不能单独调。
     match_lead=True 时只返回有训练数据的时效，避免口径不一致。
     返回 [(起报 datetime, 说明), ...]，按新到旧排，供逐级降级。
     """
