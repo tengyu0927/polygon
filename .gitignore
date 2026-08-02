@@ -35,3 +35,5 @@ run0_probe.sqlite
 # GRIB 读取用的独立虚拟环境
 .venv-grib/
 gfs_local.sqlite
+mos_local6.csv
+mos_local18.csv

@@ -302,14 +302,20 @@ def check_contracts(args):
            for f in ("run_hourly.sh", "run_daily.sh", "predict_nowcast.py",
                      "predict_mos.py", "train_nowcast.py", "merge_mos.py")}
 
-    # 两个 shell 脚本的模式列表必须一致，否则 m2_/m3_ 会对错模式
+    # 两个脚本的模式列表: 顺序必须一致（否则 m2_/m3_ 各列错位），但不再要求
+    # 完全相同 —— 临近侧多一个 local_gfs（实时从 NCEP 取最新一轮的第七成员），
+    # D+1/D+2 那条链路不用它。要求 run_daily 的列表是 run_hourly 的前缀。
     def models_of(text):
         for line in text.splitlines():
             if line.startswith("MODELS="):
                 return line.split("=", 1)[1].strip()
         return None
     a, b = models_of(src["run_hourly.sh"]), models_of(src["run_daily.sh"])
-    rep(a == b and a, "run_hourly.sh 与 run_daily.sh 的模式列表一致", a or "")
+    la = a.split(",") if a else []
+    lb = b.split(",") if b else []
+    ok = bool(la) and bool(lb) and la[:len(lb)] == lb
+    rep(ok, "run_daily 的模式列表是 run_hourly 的前缀（顺序一致）",
+        f"临近多出: {la[len(lb):]}" if ok and len(la) > len(lb) else (a or ""))
 
     n_models = len(a.split(",")) if a else 0
     spec = json.load(open(args.nowcast_model, encoding="utf-8"))

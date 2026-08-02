@@ -32,7 +32,15 @@ trap 'rm -rf "$LOCK"' EXIT
 
 STATIONS=ZSPD,ZUUU,ZGSZ,ZGGG,ZUCK,ZBAA,ZHHH,ZSQD
 # UKMO 已剔除: 归档只到 2025-01，训练期大半缺测，实测拖累 D+2（见 README）
-MODELS=ecmwf_ifs025,cma_grapes_global,icon_global,jma_gsm,gem_global
+# 第七个成员 local_gfs 不走 Open-Meteo,而是实时从 NCEP 取当时能拿到的
+# 最新一轮 GFS(gfs_live.py)。顺序必须与训练时 --nwp-csv2 一致,放最后。
+#
+# 实测(15 个月滚动回测,各时次用其真实可用的时效):
+#   11 时 0.7682 -> 0.7524  -0.0157  P=98%   第七成员用前一天 12Z(18h)
+#   12 时 0.6532 -> 0.6307  -0.0225  P=100%  第七成员用当天 00Z(6h)
+#   13 时 0.4807 -> 0.4685  -0.0122  P=98%
+#    9/10 时 P=68%/63% 未过线,但方向为负、无害,一并保留以简化配置
+MODELS=ecmwf_ifs025,cma_grapes_global,icon_global,jma_gsm,gem_global,local_gfs
 # 追加模式的顺序必须与训练时 --nwp-csv2 的顺序一致，否则 m2_/m3_ 各列对错模式
 
 # 一律按北京时取小时。用系统本地时区的话，机器时区一变自动选档就错

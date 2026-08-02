@@ -40,16 +40,47 @@ def fetch_nwp(stations, tgt, gfs_model="gfs_global"):
     return {stn: daily.get((stn, tgt.isoformat()), {}) for stn in stations}
 
 
-def fetch_m2(stations, tgt, models):
+# 特殊的「模式名」: 不走 Open-Meteo，而是实时从 NCEP 取当时能拿到的最新一轮
+# GFS（gfs_live.py）。作为第七个集合成员加入 —— **是加，不是换**。
+#
+# 实测（15 个月滚动回测，按各时次真实可用的时效）:
+#   11 时  0.7682 -> 0.7524  -0.0157  P=98%   第七成员用前一天 12Z（18h）
+#   13 时  0.4807 -> 0.4685  -0.0122  P=98%   第七成员用当天 00Z（6h）
+#    9 时  0.9409 -> 0.9371  -0.0038  P=67%   未过线
+# 对照「把 GFS 成员换掉」的方案: 三档全不过线（61%/85%/89%）。**加比换好。**
+LOCAL_GFS = "local_gfs"
+
+
+def fetch_m2(stations, tgt, models, cutoff=None):
     """追加模式的当天预报。models 的顺序必须与训练时 --nwp-csv2 的顺序一致，
     否则 m2_/m3_ 各列会对错模式，模型系数全部错位。"""
     out = []
     for mdl in models:
-        try:
-            daily = fetch_nwp(stations, tgt, mdl)
-        except Exception as e:
-            print(f"[warn] {mdl} 取数失败: {e}", file=sys.stderr)
-            daily = {}
+        daily = {}
+        if mdl == LOCAL_GFS:
+            try:
+                import gfs_live as GL
+                cand = GL.pick_run(cutoff if cutoff is not None else 13, tgt)
+                for init, desc in cand:
+                    per = GL.fetch_run(init, tgt, jobs=10, verbose=False)
+                    if not per:
+                        continue
+                    rows = GL.to_mos(per, tgt)
+                    if len(rows) < len(stations):
+                        continue
+                    daily = {r["station"]: r for r in rows}
+                    print(f"  本地 GFS: {desc}", file=sys.stderr)
+                    break
+                if not daily:
+                    print("[warn] 本地 GFS 全部轮次取不到，该成员留空",
+                          file=sys.stderr)
+            except Exception as e:
+                print(f"[warn] 本地 GFS 取数失败: {e}", file=sys.stderr)
+        else:
+            try:
+                daily = fetch_nwp(stations, tgt, mdl)
+            except Exception as e:
+                print(f"[warn] {mdl} 取数失败: {e}", file=sys.stderr)
         out.append({stn: {k: daily.get(stn, {}).get(c)
                           for k, c in N.M2_COLS.items()} for stn in stations})
     return out
@@ -293,7 +324,7 @@ def main() -> int:
                   f"{len(mdls)} 个。顺序错了系数会全部错位", file=sys.stderr)
             return 1
         print(f"取追加模式 {', '.join(mdls)}…", file=sys.stderr)
-        m2 = fetch_m2(stations, tgt, mdls)
+        m2 = fetch_m2(stations, tgt, mdls, cutoff)
 
     if args.live:
         # 兜底自己也要有兜底: AWC 挂了就退回读库。库里可能是陈旧实况，
