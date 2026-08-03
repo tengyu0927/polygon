@@ -586,16 +586,21 @@ def main() -> int:
     if args.csv_out:
         with open(args.csv_out, "w", newline="", encoding="utf-8") as fh:
             w = csv.writer(fh)
+            # pred_raw 是**未取整**的连续预报。已有的 pred_mean 等列一律取整，
+            # 分析「逐小时来回跳」时就没法区分「真的变了 1 度」和「在 x.5
+            # 附近抖了 0.02 度导致整数翻了个个儿」—— 后者占了大头。
             w.writerow(["station", "date", "cutoff", "pred_mean", "pred_mode",
                         "pred_win", "actual", "so_far",
-                        "w1_mean", "w1_mode", "w1_win", "hit_win", "pred_p90"])
+                        "w1_mean", "w1_mode", "w1_win", "hit_win", "pred_p90",
+                        "pred_raw"])
             for (stn, c), v in sorted(res.items()):
                 for d, p, a, sf, pk, pw, pq in v:
                     w.writerow([stn, d, c, round(p), round(pk), round(pw), a, sf,
                                 int(abs(round(p) - a) <= 1),
                                 int(abs(round(pk) - a) <= 1),
                                 int(abs(round(pw) - a) <= 1),
-                                int(round(pw) == round(a)), round(pq)])
+                                int(round(pw) == round(a)), round(pq),
+                                round(p, 4)])
         print(f"\n逐日结果已写 {args.csv_out}")
     return 0
 
