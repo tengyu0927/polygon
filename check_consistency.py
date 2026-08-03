@@ -191,7 +191,10 @@ def check_mos(args):
     try:
         import gfs_live as GL
         import datetime as _dt
-        want = {9: 18, 10: 18, 11: 18, 12: 6, 13: 6}
+        # 2026-08-03: 9/10/11 时从 18h 切到 12h（18Z 历史回补完成，
+        # 15 个月回测 Δ=-0.0062、P=95.2%）。改这张表必须同步重训，
+        # 训练侧对应 gfs_local_build.py --lead 12 出的 mos_local12.csv。
+        want = {9: 12, 10: 12, 11: 12, 12: 6, 13: 6}
         tgt = _dt.date.today() + _dt.timedelta(days=1)
         bad = []
         for cut, lead in want.items():
@@ -292,6 +295,16 @@ def check_scripts(args):
     degraded = [l for l in rows if "⚠" in l]
     rep(not degraded, "没有站落到降级路径（模式特征齐全）",
         "" if not degraded else f"{len(degraded)} 个站缺模式特征")
+
+    # 第七成员（本地 GFS）必须真的取到。2026-08-03 踩过: cron 的 PATH 指向
+    # /opt/homebrew/bin/python3，而那个解释器上的 eccodes 不知何时没了，
+    # gfs_live 每轮都吐「需要 eccodes」-> 该成员留空。模型是**带着 m7_ 特征
+    # 训练的**，预测端拿不到就是静默错配 —— 上面那两项当时全是 ✓，
+    # 因为它们只看站行里有没有 ⚠，看不见某个成员整体缺失。
+    blob = r.stdout + r.stderr
+    m7bad = [k for k in ("本地 GFS 全部轮次取不到", "需要 eccodes") if k in blob]
+    rep(not m7bad, "第七成员（本地 GFS）实时取到了",
+        "" if not m7bad else f"{m7bad} —— 模型带 m7_ 特征训练，取不到就是训练/预测错配")
 
     # 单实例锁: 第二个实例必须被跳过，否则会堆积僵尸进程抢 sqlite 写锁
     import threading
