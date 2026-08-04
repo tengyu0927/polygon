@@ -103,4 +103,11 @@ fi
         --hurdle --p90 --verbose $USE_LIVE ${EXTRA[@]+"${EXTRA[@]}"}
 } 2>&1 | tee -a "$LOG"
 
+# 集合预报采集。**只攒数据，不进任何模型** —— Open-Meteo 的集合 API 拿不到
+# 历史（见 ens_collect.py 顶部），时效也只能靠记下抓取时刻自己保证，
+# 所以要用就得从今天开始自己攒，约 3 个月（~720 站日）才够做 A/B。
+# 一次请求带 8 个站，4 个模式共 4 次请求，几秒钟。失败绝不能影响预报。
+python3 ens_collect.py --db "${PLOYGON_ENS_DB:-ens.sqlite}" --days 2 \
+    2>&1 | tail -1 >&2 || echo "  [warn] 集合采集失败（不影响预报）" >&2
+
 echo "已追加到 $LOG" >&2

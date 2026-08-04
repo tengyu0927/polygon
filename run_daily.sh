@@ -191,4 +191,8 @@ PYCHK
     python3 verify.py --db "${PLOYGON_VERIFY_DB:-verify.sqlite}" || true
 } 2>&1 | tee -a "$LOG"
 
+# 集合预报采集，这里取 3 天以覆盖 D+1/D+2 的时效档（见 run_hourly 里的说明）
+python3 ens_collect.py --db "${PLOYGON_ENS_DB:-ens.sqlite}" --days 3 \
+    2>&1 | tail -1 >&2 || echo "  [warn] 集合采集失败（不影响预报）" >&2
+
 echo "已追加到 $LOG" >&2
