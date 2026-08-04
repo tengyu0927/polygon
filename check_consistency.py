@@ -263,7 +263,8 @@ CRON_ENV = {"PATH": "/opt/homebrew/bin:/usr/bin:/bin",
             "HOME": os.environ.get("HOME", ""),
             "PLOYGON_LOG": "/tmp/_check_run.log",
             "PLOYGON_TAF_DB": "/tmp/_check_taf.sqlite",
-            "PLOYGON_VERIFY_DB": "/tmp/_check_verify.sqlite"}
+            "PLOYGON_VERIFY_DB": "/tmp/_check_verify.sqlite",
+            "PLOYGON_STATE": "/tmp/_check_state.json"}
 
 
 def check_scripts(args):

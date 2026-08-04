@@ -363,7 +363,28 @@ def main() -> int:
     print(f"临近预报  目标日 {tgt}  截止 {cutoff:02d} 时（北京时）  "
           f"{src}")
     p90_col = f"{'不排除':>8}" if args.p90 else ""
-    print(f"\n  {'站点':<14}{'预报':>7}{p90_col}{'已达':>7}{'预计再升':>10}   备注")
+    print(f"\n  {'站点':<14}{'预报':>7}{p90_col}{'已达':>7}{'预计再升':>10}{'把握':>6}   备注")
+
+    # 迟滞用的上一轮报出去的整数。报的是整数，连续值在 x.5 附近抖 0.02 度就会
+    # 让整数翻个个儿 —— 15 个月回测里 61% 的逐小时改动是这种空转（动出去又回来）。
+    # 规则: 上次报了 k 就一直报 k，直到连续值离 k 超过 0.5+HYST 才改。
+    #
+    # 只在 9-12 时启用。回测（完全命中率口径，3494 站日）:
+    #   全时段 0.2   空转 -52%  命中 54.43% -> 53.59%（-0.84pt）
+    #   只 9-12 0.2  空转 -32%  命中 54.43% -> 54.34%（-0.09pt）  <- 采用
+    # 损失全部发生在 13-15 时: 那时值在收敛，压住真实变动就是纯损失。
+    HYST, HYST_CUTOFFS = 0.20, (9, 10, 11, 12)
+    # 可改道 —— 一致性检查实跑会真的出预报，不能让它覆盖生产的迟滞状态
+    _st_path = os.environ.get("PLOYGON_STATE") or os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "nowcast_state.json")
+    _state = {}
+    if os.path.exists(_st_path):
+        try:
+            _j = json.load(open(_st_path, encoding="utf-8"))
+            if _j.get("date") == tgt.isoformat():
+                _state = _j.get("last", {})
+        except Exception:                             # noqa: BLE001
+            _state = {}
 
     names, med = spec["names"], spec["median"]
     warned_p90 = False
@@ -462,14 +483,45 @@ def main() -> int:
         # 回测里 0/2184 出现过，但那是运气，不是保证 —— 硬约束住
         if p90 is not None:
             p90 = max(p90, fin)
+        # 迟滞: 只有连续值离上次报的整数超过 0.5+HYST 才改口
+        prev = _state.get(stn)
+        if cutoff in HYST_CUTOFFS and prev is not None and abs(fin - prev) <= 0.5 + HYST:
+            shown = int(prev)
+        else:
+            shown = int(round(fin))
+        _state[stn] = shown
+
+        # 把握: 判据是「预计还要升多少」。回测（3494 站日）实测的完全命中率 ——
+        #   剩余<0.15  9时88% 11时83% 13时93%（覆盖 3%/4%/15%）
+        #   剩余<0.5   9时75% 11时75% 13时79%（覆盖 6%/11%/43%）
+        #   剩余>=0.5  不管几点都只有 31-50%
+        # 命中率几乎不随时次变化，变的只有覆盖率 —— 预报不会随时间"变准"，
+        # 时间只是把不确定的情况物理性地消解掉。
+        conf = "已定" if rise < 0.15 else ("大致" if rise < 0.5 else "")
         pc = (f"{round(p90):>8}" if p90 is not None
               else (f"{'--':>8}" if args.p90 else ""))
-        print(f"  {stn} {N.NAMES.get(stn,''):<9}{round(fin):>7}{pc}{msf:>7.0f}"
-              f"{rise:>+10.1f}   {note}")
-        rows_out.append((stn, round(fin), msf, rise))
+        print(f"  {stn} {N.NAMES.get(stn,''):<9}{shown:>7}{pc}{msf:>7.0f}"
+              f"{rise:>+10.1f}{conf:>6}   {note}")
+        rows_out.append((stn, shown, msf, rise))
 
     if args.compare and os.path.exists(args.compare):
         print(f"\n（另见 {args.compare} 的 D+1 结果，可并排比较）")
+    try:
+        json.dump({"date": tgt.isoformat(), "cutoff": cutoff, "last": _state},
+                  open(_st_path, "w", encoding="utf-8"), ensure_ascii=False)
+    except Exception as e:                            # noqa: BLE001
+        print(f"[warn] 迟滞状态没写成 ({e})，下一轮会退回普通四舍五入", file=sys.stderr)
+
+    if any(r[3] < 0.5 for r in rows_out):
+        print(f"\n「把握」= 预计还要升的幅度已经很小，当天基本走完了。"
+              f"「已定」实测完全命中 83~93%、「大致」75~79%，"
+              f"没标的不管几点都只有 31~50%。")
+        print("**但「已定」不等于不再改。** 回测里标了「已定」之后仍有 ~22% "
+              "会在后面的时次改动，平均改 1.2~1.5 度 —— "
+              "而那些改动 **100% 是改对方向的，一次都没改坏过**。")
+        print("所以口径是: 永远以最新一轮为准。锁死 9 时的值最终只有 75% 命中，"
+              "跟着更新是 94%。")
+
     print(f"\n**要报的数就是「预报」这一列。** 已达 = 截止时刻当日累计最高。")
     if args.p90:
         print("「不排除」不是备选预报值，别拿它当每天要报的那个数 ——")
