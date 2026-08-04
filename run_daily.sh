@@ -81,18 +81,30 @@ if (( HOUR < 18 )); then
     echo "       recent_bias 会偏低，预报会系统性偏冷。建议 23 时再跑。" >&2
 fi
 
-# 实况完整性检查: 各站今日观测条数，太少说明 IEM 归档还没跟上
+# 实况完整性检查: recent_bias 用今天的日最高温，所以必须确认今天的观测
+# **已经盖过峰值时段**，否则算出来的偏差是拿半天的数据当一整天。
+#
+# 判据看的是「最新观测到几点」，不是条数。2026-08-04 查出条数判据对
+# 北京/上海/广州是形同虚设的 —— 那三个站每小时报 2 次（每天 50/48/52 条），
+# 攒够 20 条才到早上 9-10 点，整个下午全缺它也不会响。另外 5 个站每小时
+# 报 1 次，20 条正好到 20 时，所以同一个阈值在 8 个站上含义完全不同。
+#
+# 18 时这个线来自峰值最晚见于 17 时（2026-07-25 成都）。
 python3 - <<PY >&2
 import sqlite3
 c = sqlite3.connect("cn.sqlite")
 rows = list(c.execute(
-    "SELECT station, COUNT(*), MAX(temp_c) FROM obs WHERE local_date=? "
-    "GROUP BY station", ("$TODAY",)))
-thin = [r[0] for r in rows if r[1] < 20]
+    "SELECT station, COUNT(*), "
+    "MAX(CAST(strftime('%H', datetime(obs_time_utc,'+8 hours')) AS INT)) "
+    "FROM obs WHERE local_date=? GROUP BY station", ("$TODAY",)))
 if len(rows) < 8:
-    print(f"[warn] 今日只有 {len(rows)}/8 个站有观测，recent_bias 会退化")
-if thin:
-    print(f"[warn] 观测偏少的站: {', '.join(thin)}（IEM 归档滞后）")
+    have = {r[0] for r in rows}
+    print(f"[WARN] 今日只有 {len(rows)}/8 个站有观测，recent_bias 会退化")
+short = [(r[0], r[2]) for r in rows if r[2] is None or r[2] < 18]
+if short:
+    print("[WARN] 观测没盖过峰值时段（recent_bias 会偏低、预报系统性偏冷）:")
+    for s, h in short:
+        print(f"       {s} 最新只到 {h} 时")
 PY
 
 # 刷新训练集。**这一步不能省** —— 2026-07-31 查出 mos.csv 停在 7-26 整整五天，
