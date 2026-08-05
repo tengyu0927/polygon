@@ -386,6 +386,19 @@ def main() -> int:
         except Exception:                             # noqa: BLE001
             _state = {}
 
+    # GBM 边文件。缺 sklearn / 缺文件 / 读不出来都自动降级成纯线性，不报错 ——
+    # 与 predict_mos.py 同一约定（<model>.gbm.pkl）。
+    _GBM, _NP = {}, None
+    _gp = args.model + ".gbm.pkl"
+    if os.path.exists(_gp):
+        try:
+            import pickle
+            import numpy as _NP                        # noqa: N813
+            _GBM = {int(k): v for k, v in pickle.load(open(_gp, "rb")).items()}
+        except Exception as e:                          # noqa: BLE001
+            print(f"[warn] GBM 没读成（{str(e)[:60]}），本轮只用线性", file=sys.stderr)
+            _GBM, _NP = {}, None
+
     names, med = spec["names"], spec["median"]
     warned_p90 = False
     rows_out = []
@@ -442,6 +455,17 @@ def main() -> int:
             rise, tag = N.pred_hurdle(mh, X)[0], base + "两段式"
         else:
             rise, tag = max(0.0, T.ridge_pred(mr, X)[0]), base + "岭回归"
+
+        # 非线性一路（只有 9/10 时训了，见 train_nowcast.NLIN_CUTOFFS）。
+        # GBM 是在**合并**样本上训的，所以喂它的矩阵要用合并的 median，
+        # 不能用上面分站那套 —— 列的标准化基准不一样，混用就是喂错数。
+        gw = spec.get("gbm_w")
+        gmod = _GBM.get(cutoff)
+        if gmod is not None and gw is not None and _NP is not None:
+            Xg, _ = N.matrix([{"f": f}], med, names)
+            pg = max(0.0, float(gmod.predict(_NP.asarray(Xg, float))[0]))
+            rise = gw * rise + (1 - gw) * pg
+            tag += "+GBM"
         fin = msf + rise
 
         p90 = None

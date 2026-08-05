@@ -124,6 +124,17 @@ FEATS = ["max_so_far", "t_now", "trend_1h", "trend_2h", "trend_3h", "rise_since_
 # 注意: INTERACTIONS 里那几个交互项实测无显著收益（见下），故不在 FEATS 里。
 # 要重测就把它们加回这个列表
 
+# 上午风速聚合量（A/B 测试中，PLOYGON_WINDAM=1 打开）。
+# 起因: 2026-08-05 四个站 16 时才见顶，15 时那轮全线报低。查出来当天这四个站
+# 上午风速集体掉到 1.8~2.2 m/s（前四天 2.4~5.0）。7189 站日验证不是巧合 ——
+# 上午平均风速与见顶时刻 r=-0.310，是所有上午可得量里最强的
+# （湿度 -0.07 / 露点 -0.02 / 气压 -0.03 基本没信息）。
+# 而且回测残差是单调的: 按上午风速五等分，15 时偏差 -0.150 -> -0.036、
+# MAE 0.208 -> 0.036，最静组比最大风组差 6 倍 —— 说明 wspd_now 这一个瞬时值
+# 没把信号榨干。
+if os.environ.get("PLOYGON_WINDAM") == "1":
+    FEATS += ["wspd_mean_am", "wspd_min_am", "calm_frac_am"]
+
 # 特征名 -> mos.csv / daily_features 的列名。午后云量和短波辐射直接决定还能升多少，
 # 只喂 2m 温度等于扔掉模式里最相关的那部分信息。
 NWP_COLS = {
@@ -165,13 +176,16 @@ FEATS.append("nwp_recent_bias")
 # 物理动机: 午后雷暴压顶是广州这类站的主要误差来源，而现有 8 个模式变量里
 # 没有任何降水或对流量。previous-runs 端点支持 precipitation / cape /
 # lifted_index（能锁定起报时刻 = 不泄漏），气压层变量则不支持。
+# **列一律计算，只有「进不进 FEATS」受 flag 控制。**
+# 2026-08-06 踩过: 这些列原来连计算都被 flag 门控，于是 9/10 时的模型带着
+# 126 项特征上线、而预测端不设 flag 只能产出 79 项 —— 静默错配。
+NWP_COLS.update({
+    "nwp_precip_peak": "precipitation_peakmean",
+    "nwp_precip_max": "precipitation_max",
+    "nwp_cape_peak": "cape_peakmean",
+    "nwp_li_peak": "lifted_index_peakmean",
+})
 if os.environ.get("PLOYGON_CONV") == "1":
-    NWP_COLS.update({
-        "nwp_precip_peak": "precipitation_peakmean",
-        "nwp_precip_max": "precipitation_max",
-        "nwp_cape_peak": "cape_peakmean",
-        "nwp_li_peak": "lifted_index_peakmean",
-    })
     FEATS.extend(["nwp_precip_peak", "nwp_precip_max",
                   "nwp_cape_peak", "nwp_li_peak"])
 # 模式的逐时廓线特征（A/B 测试中）。设 PLOYGON_PROF=1 打开。
@@ -180,15 +194,15 @@ if os.environ.get("PLOYGON_CONV") == "1":
 # 毫无信息），而同一天辐射从 13 时的 744 骤降到 14 时 471、15 时 282。
 # 原来只喂 cloud_cover_peakmean / shortwave_radiation_peakmean 两个时段均值，
 # 等于把决定见顶时刻的那条曲线压成了一个数。
+NWP_COLS.update({
+    "nwp_swrad_peak_h": "swrad_peak_h",
+    "nwp_swrad_half_h": "swrad_half_h",
+    "nwp_swrad_late_frac": "swrad_late_frac",
+    "nwp_swrad_slope_pm": "swrad_slope_pm",
+    "nwp_cld_onset_h": "cld_onset_h",
+    "nwp_cld_slope_pm": "cld_slope_pm",
+})
 if os.environ.get("PLOYGON_PROF") == "1":
-    NWP_COLS.update({
-        "nwp_swrad_peak_h": "swrad_peak_h",
-        "nwp_swrad_half_h": "swrad_half_h",
-        "nwp_swrad_late_frac": "swrad_late_frac",
-        "nwp_swrad_slope_pm": "swrad_slope_pm",
-        "nwp_cld_onset_h": "cld_onset_h",
-        "nwp_cld_slope_pm": "cld_slope_pm",
-    })
     FEATS.extend(["nwp_swrad_peak_h", "nwp_swrad_half_h", "nwp_swrad_late_frac",
                   "nwp_swrad_slope_pm", "nwp_cld_onset_h", "nwp_cld_slope_pm"])
 
@@ -213,6 +227,22 @@ if os.environ.get("PLOYGON_PROF") == "1":
 M2_COLS = {"tmax": "temperature_2m_max",
            "cloud_peak": "cloud_cover_peakmean",
            "swrad_peak": "shortwave_radiation_peakmean"}
+
+# 边界层高度（A/B 测试中，PLOYGON_HPBL=1 打开）。
+# 2026-08-05 查出: gfs_local_build.py 一直在算 hpbl_peak_h / hpbl_half_h /
+# hpbl_slope_pm 并写进 mos_local*.csv（脚本里还专门写了注释「见顶发生在混合层
+# 塌缩的午后转换时刻」），但 train_nowcast 从来没读过这几列 —— **算了扔**。
+# 只有本地 GFS 那一路有这几列，其余模式取不到值会留空、由中位数填补。
+M2_HPBL = {"hpbl_peak_h": "hpbl_peak_h",
+           "hpbl_half_h": "hpbl_half_h",
+           "hpbl_slope_pm": "hpbl_slope_pm",
+           "hpbl_max": "boundary_layer_height_max",
+           "hpbl_pk": "boundary_layer_height_peakmean"}
+# 列一律读、一律写进特征字典（M2_ALL），只有「进不进名字表」受 flag 控制。
+# 见上面 CONV/PROF 处的同一条教训。
+M2_ALL = {**M2_COLS, **M2_HPBL}
+if os.environ.get("PLOYGON_HPBL") == "1":
+    M2_COLS.update(M2_HPBL)
 ENS_FEATS = ["ens_mean", "ens_spread", "ens_mean_minus_sofar", "ens_max_minus_min"]
 
 
@@ -239,7 +269,7 @@ def load_m2(paths):
         for r in csv.DictReader(open(p, encoding="utf-8")):
             if r.get("lead") == "1" and r.get("temperature_2m_max"):
                 mm[(r["station"], r["date"])] = {
-                    k: float(r[c]) for k, c in M2_COLS.items()
+                    k: float(r[c]) for k, c in M2_ALL.items()
                     if r.get(c) not in (None, "")}
         maps.append(mm)
     return maps
@@ -251,7 +281,7 @@ def add_m2_feats(f, so_far, members_extra):
     members = [t1] if t1 is not None else []
     for i, g in enumerate(members_extra, start=2):
         g = g or {}
-        for k in M2_COLS:
+        for k in M2_ALL:
             f[f"m{i}_{k}"] = g.get(k)
         t2 = g.get("tmax")
         f[f"m{i}_minus_sofar"] = None if t2 is None else t2 - so_far
@@ -354,6 +384,7 @@ def build_feats(o, cutoff, prev, clim_r, clim_p, doy, nwp):
 
     am = [v for h, v in o.items() if h >= 6]
     cl = [v["cld"] for v in am if v["cld"] is not None]
+    ws = [v["wspd"] for v in am if v["wspd"] is not None]
 
     f = {
         "max_so_far": msf, "t_now": cur["t"],
@@ -385,6 +416,15 @@ def build_feats(o, cutoff, prev, clim_r, clim_p, doy, nwp):
                          / max(1, sum(1 for v in am if v["dewp"] is not None))
                          if any(v["dewp"] is not None for v in am) else None),
         "cld_mean_am": (sum(cl) / len(cl)) if cl else None,
+        # 上午风速的聚合量。模型里原来只有 wspd_now（截止时刻的瞬时值），
+        # 而 METAR 的风是量化过的、单点噪声很大。7189 站日实测，与见顶时刻的
+        # 相关: 上午均值 -0.310 > 瞬时值 -0.284 > 上午最小 -0.270。
+        # 物理: 静风时湍流混合弱，热量在近地面堆积，见顶推后 ——
+        # 最静 20% 的日子平均 14.08 时见顶、16 时后见顶占 17.5%；
+        # 最大风 20% 是 12.24 时、4.0%。
+        "wspd_mean_am": (sum(ws) / len(ws)) if ws else None,
+        "wspd_min_am": min(ws) if ws else None,
+        "calm_frac_am": (sum(1 for x in ws if x <= 1.5) / len(ws)) if ws else None,
         "ts_am": max((v["ts"] for v in am), default=0.0),
         "ra_am": max((v["ra"] for v in am), default=0.0),
         "obsc_am": max((v["obsc"] for v in am), default=0.0),
@@ -453,8 +493,8 @@ def make_samples(days, cutoff, clim_r, clim_p, nwp_map, split_year, m2_maps=()):
             if cr is not None:
                 hist.append((r["date"], r["rise"] - cr))
 
-    if XSTN:
-        add_xstn_feats(out)
+    # 一律算（不进名字表就用不上，但预测端必须能产出），同上面的教训
+    add_xstn_feats(out)
     if ORACLE_PEAK:
         # **明知泄漏的先知实验**，只用来量「见顶时刻不确定」这个瓶颈值多少。
         # 把当天真实见顶时刻直接喂进特征表 —— 任何见顶时刻预测器的效果
@@ -492,6 +532,11 @@ CURVE = os.environ.get("PLOYGON_CURVE") == "1"
 CURVE_FEATS = ["trend_4h", "trend_5h", "trend_6h", "curv_2h"]
 if CURVE:
     FEATS.extend(CURVE_FEATS)
+
+# 启用非线性（GBM 融合）的时次。9/10 时 P=100%，11-13 时不显著，故不开 ——
+# 开了等于拿没有证据的改动去动已经稳定的档。cutoff -> GBM 模型的暂存。
+NLIN_CUTOFFS = {9, 10}
+GBM_STORE = {}
 
 XSTN = os.environ.get("PLOYGON_XSTN") == "1"
 XPARTNER = {                       # 站 -> 两个伙伴站（按上面的相关排序取前二）
@@ -954,8 +999,43 @@ def run_cutoff(days, cutoff, clim_r, clim_p, nwp_map, args, m2_maps=()):
         for k, v in sorted(zip(cn, mdl["w"]), key=lambda x: -abs(x[1]))[:12]:
             print(f"  {k:<28}{v:+8.3f}")
 
+    # 非线性一路。临近预报到 2026-08-05 为止是**纯线性的**（ridge + 两段式的
+    # cls/reg 都是线性），而 D+1 那边早就是 ridge+GBM 融合。线性表达不了交互:
+    # 「静风 × 剩余升幅大 × 云少」只能给风速一个固定权重。实测（15 个月滚动
+    # 回测、9-13 时）加 GBM 融合并把此前被否的要素一起放进来:
+    #   9 时  0.9125 -> 0.8655  (-0.0469, P=100%)
+    #   10 时 0.8425 -> 0.8169  (-0.0256, P=100%)
+    #   11/12/13 时 均不显著（P=61%/65%/57%）
+    # 所以只在 9/10 时启用（NLIN_CUTOFFS）。融合权重在验证集上选，与 train_mos 同法。
+    gbm = None
+    if cutoff in NLIN_CUTOFFS:
+        try:
+            from sklearn.ensemble import HistGradientBoostingRegressor as _G
+            import numpy as _np
+        except ImportError:
+            _G = None
+        if _G is not None:
+            Xg, _ = matrix(tr, med, names)
+            Xv, _ = matrix(va, med, names)
+            g = _G(max_depth=3, max_iter=300, learning_rate=0.06,
+                   min_samples_leaf=20, random_state=0).fit(
+                       _np.asarray(Xg, float), _np.asarray(ytr, float))
+            pr = [max(0.0, v) for v in T.ridge_pred(mdl, Xv)]
+            pg = [max(0.0, v) for v in g.predict(_np.asarray(Xv, float))]
+            bw, bm = 1.0, 1e9
+            for w in (1.0, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.0):
+                e = sum(abs(w * a + (1 - w) * b + r["so_far"] - r["tmax"])
+                        for a, b, r in zip(pr, pg, va)) / len(va)
+                if e < bm:
+                    bw, bm = w, e
+            gbm = (g, bw)
+            print(f"\n  非线性: GBM 已拟合，融合权重 ridge={bw:.1f} / gbm={1-bw:.1f}")
+    # pkl 里**只存模型**，融合权重走 JSON 的 gbm_w —— 两处都存会漂
+    GBM_STORE[cutoff] = None if gbm is None else gbm[0]
+
     return {"cutoff": cutoff, "alpha": alpha, "names": names, "median": med,
             "ridge": mdl, "hurdle": hm, "ordinal": ordm, "q90": q90,
+            "gbm_w": None if gbm is None else gbm[1],
             "per_station": per or None,
             "has_nwp": bool(args.nwp_csv),
             "clim_rise": {f"{k[0]}|{k[1]}": v for k, v in clim_r.items()},
@@ -1019,6 +1099,15 @@ def main() -> int:
         json.dump({str(k): v for k, v in out.items()},
                   open(args.dump, "w"), ensure_ascii=False)
         print(f"\n模型已存 {args.dump}")
+        # GBM 序列化不进 JSON，单独 pickle（与 train_mos 同一约定）。
+        # 预测端缺 sklearn 或缺这个文件时会自动只用岭回归/两段式，不会崩。
+        gb = {c: g for c, g in GBM_STORE.items() if g is not None and c in out}
+        if gb:
+            import pickle
+            with open(args.dump + ".gbm.pkl", "wb") as fh:
+                pickle.dump(gb, fh)
+            print(f"GBM 部分已存 {args.dump}.gbm.pkl"
+                  f"（时次 {sorted(gb)}；预测端缺 sklearn 会自动降级）")
     return 0
 
 

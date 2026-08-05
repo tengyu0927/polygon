@@ -234,12 +234,17 @@ def check_mos(args):
     # 带着 PLOYGON_XSTN=1 训练出来的模型上线后会静默拿到 None。
     # oracle_* 是明知泄漏的先知实验特征（量「见顶时刻不确定」这个瓶颈值多少），
     # 上线就等于用未来信息预报。必须在这里挡死。
-    rejected = ({"nwp_precip_peak", "nwp_precip_max", "nwp_cape_peak", "nwp_li_peak",
-                 "oracle_peak_h", "oracle_hours_to_peak",
-                 "nwp_swrad_peak_h", "nwp_swrad_half_h", "nwp_swrad_late_frac",
-                 "nwp_swrad_slope_pm", "nwp_cld_onset_h", "nwp_cld_slope_pm",
-                 "pk_p_late"}
-                | set(TN.xstn_feature_names()) | set(TN.CURVE_FEATS))
+    # 2026-08-06: 对流(CONV)、辐射/云廓线(PROF)、温度曲线(CURVE)、上午风速
+    # (WINDAM)、边界层(HPBL) 这五族**已从黑名单移出** —— 它们当年是在**纯线性**
+    # 模型里被否的，加了 GBM 之后一起重测，9/10 时 -0.0372 / -0.0270（P 均 100%）。
+    # 同一批要素单独线性加是 +0.0068(P=0%)、非线性里是负 —— 结论会随模型结构翻转。
+    # 仍在黑名单里的:
+    #   oracle_*  明知泄漏，永远不许上线
+    #   pk_p_late 见顶时刻辅助模型的输出，未通过 A/B
+    #   x1_/x2_   跨站: 训练端能算、**预测端逐站循环产不出来**，
+    #             2026-08-06 被 [1] 的逐列比对当场抓到，故仍禁止
+    rejected = ({"oracle_peak_h", "oracle_hours_to_peak", "pk_p_late"}
+                | set(TN.xstn_feature_names()))
     for path, tag in ((args.nowcast_model, "临近预报模型"),
                       (args.nowcast_late_model, "临近预报晚时次模型")):
         if not os.path.exists(path):
@@ -306,6 +311,21 @@ def check_scripts(args):
     m7bad = [k for k in ("本地 GFS 全部轮次取不到", "需要 eccodes") if k in blob]
     rep(not m7bad, "第七成员（本地 GFS）实时取到了",
         "" if not m7bad else f"{m7bad} —— 模型带 m7_ 特征训练，取不到就是训练/预测错配")
+
+    # 9/10 时的模型是 ridge+GBM 融合（gbm_w=0.3）。GBM 存在 <model>.gbm.pkl，
+    # 缺 sklearn / 缺文件时 predict_nowcast 会自动降级成纯线性 —— 不报错，
+    # 但那是拿 0.3 权重的岭回归当全部答案，等于**静默丢掉 70% 的模型**。
+    # 备注里出现 "+GBM" 才说明真的融合了。
+    import json as _json
+    _spec = _json.load(open(args.nowcast_model, encoding="utf-8"))
+    _need = {c for c, v in _spec.items() if v.get("gbm_w") is not None}
+    # 观测不足时整表是 "--"，那一轮压根没出预报，自然也没有 +GBM —— 跳过，
+    # 否则半夜跑这项必然误报（与站行正则那次同一类坑）
+    _live = [l for l in rows if "--" not in l]
+    if _need and str(args.cutoff) in _need and _live:
+        rep("+GBM" in blob, f"{args.cutoff} 时的 GBM 真的参与了融合",
+            "" if "+GBM" in blob else
+            "备注里没有 +GBM —— 缺 sklearn 或缺 .gbm.pkl，静默退回纯线性")
 
     # 单实例锁: 第二个实例必须被跳过，否则会堆积僵尸进程抢 sqlite 写锁
     import threading

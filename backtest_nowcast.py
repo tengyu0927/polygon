@@ -162,6 +162,28 @@ def fit_block(tr, names, alphas, val_days=90, peak=False, cutoff=12):
                       for x, r in zip(pv, rows_va)) / len(rows_va)
             if mae < best[1]:
                 best = (a, mae, m)
+        # 非线性一路（A/B 测试中，PLOYGON_NLIN=1 打开）。
+        # 临近预报到 2026-08-05 为止是**纯线性的**（ridge + 两段式的 cls/reg
+        # 都是线性），而 D+1 那边早就是 ridge+GBM 融合、融合比纯 ridge 好 0.055。
+        # 线性模型表达不了交互: 「静风 × 剩余升幅大」只能给风速一个固定权重。
+        # add_interactions 里手工枚举的那几个交互项实测无收益 —— 枚举本来就
+        # 枚举不过来，这正是该交给树模型的地方。
+        # 融合权重在验证集上选，与 train_mos 同法。
+        gbm = None
+        if os.environ.get("PLOYGON_NLIN") == "1" and PEAK_GBM:
+            Xa = _np.asarray(X, float)
+            g = _GBR(max_depth=3, max_iter=300, learning_rate=0.06,
+                     min_samples_leaf=20, random_state=0).fit(Xa, _np.asarray(y, float))
+            pr = [max(0.0, v) for v in T.ridge_pred(best[2], Xv)]
+            pg = [max(0.0, v) for v in g.predict(_np.asarray(Xv, float))]
+            bw, bm = 1.0, 1e9
+            for w in (1.0, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.0):
+                e = sum(abs(w * a + (1 - w) * b + r["so_far"] - r["tmax"])
+                        for a, b, r in zip(pr, pg, rows_va)) / len(rows_va)
+                if e < bm:
+                    bw, bm = w, e
+            gbm = (g, bw)
+
         q90 = N.fit_quantile(rows_tr, 0.90, best[0], med, names)
         # 方差膨胀用的中心: 训练集上预报升幅的均值。绕它做 pred' = mu + c*(pred-mu)，
         # 双向调整 —— 大升幅往上推、零升幅往下压，不像换 P90 那样单向抬高
@@ -173,7 +195,7 @@ def fit_block(tr, names, alphas, val_days=90, peak=False, cutoff=12):
         return {"median": med, "ridge": best[2], "alpha": best[0],
                 "hurdle": N.fit_hurdle(rows_tr, [best[0]], med, names),
                 "ordinal": N.fit_ordinal(rows_tr, best[0], med, names),
-                "q90": q90, "rise_mu": rise_mu}
+                "q90": q90, "rise_mu": rise_mu, "gbm": gbm}
 
     # 第一段: 见顶时刻辅助模型。只用训练集拟合，再把预报值注入全部行的特征
     base_names = [n for n in names if n not in PEAK_FEATS]
@@ -283,11 +305,19 @@ def predict(m, rows, names, hurdle, thresh=0.0):
     X, _ = N.matrix(rows, m["median"], names)
     if hurdle and m["hurdle"]:
         if thresh <= 0:
-            return N.pred_hurdle(m["hurdle"], X)
-        pp = [min(1.0, max(0.0, v)) for v in T.ridge_pred(m["hurdle"]["cls"], X)]
-        rr = T.ridge_pred(m["hurdle"]["reg"], X)
-        return [0.0 if p < thresh else p * max(0.0, r) for p, r in zip(pp, rr)]
-    return [max(0.0, v) for v in T.ridge_pred(m["ridge"], X)]
+            out = N.pred_hurdle(m["hurdle"], X)
+        else:
+            pp = [min(1.0, max(0.0, v)) for v in T.ridge_pred(m["hurdle"]["cls"], X)]
+            rr = T.ridge_pred(m["hurdle"]["reg"], X)
+            out = [0.0 if p < thresh else p * max(0.0, r) for p, r in zip(pp, rr)]
+    else:
+        out = [max(0.0, v) for v in T.ridge_pred(m["ridge"], X)]
+    g = m.get("gbm")
+    if g:
+        mod, w = g
+        pg = [max(0.0, v) for v in mod.predict(_np.asarray(X, float))]
+        out = [w * a + (1 - w) * b for a, b in zip(out, pg)]
+    return out
 
 
 def rise_pmf(m, rows, names):
