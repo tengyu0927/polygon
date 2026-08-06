@@ -135,6 +135,13 @@ FEATS = ["max_so_far", "t_now", "trend_1h", "trend_2h", "trend_3h", "rise_since_
 if os.environ.get("PLOYGON_WINDAM") == "1":
     FEATS += ["wspd_mean_am", "wspd_min_am", "calm_frac_am"]
 
+# 天气型异常一族（A/B 测试中，PLOYGON_REGIME=1 打开）。见 build_feats 里的说明。
+# 列一律计算，只有进不进 FEATS 受 flag 控制（2026-08-06 的教训）。
+REGIME_FEATS = ["sofar_minus_now", "sofar_hour", "sofar_is_night",
+                "ts_hours_am", "ra_hours_am", "wet_frac_am"]
+if os.environ.get("PLOYGON_REGIME") == "1":
+    FEATS += REGIME_FEATS
+
 # 特征名 -> mos.csv / daily_features 的列名。午后云量和短波辐射直接决定还能升多少，
 # 只喂 2m 温度等于扔掉模式里最相关的那部分信息。
 NWP_COLS = {
@@ -428,6 +435,27 @@ def build_feats(o, cutoff, prev, clim_r, clim_p, doy, nwp):
         "ts_am": max((v["ts"] for v in am), default=0.0),
         "ra_am": max((v["ra"] for v in am), default=0.0),
         "obsc_am": max((v["obsc"] for v in am), default=0.0),
+        # 「天气型异常」一族（A/B 测试中，PLOYGON_REGIME=1 打开）。
+        # 起因: 2026-08-06 成都日最高 29 度出现在 **00 时**，雷暴 8 时爆发，
+        # 白天全程被压在 21-23 度。9 时截止时模型手上 trend_1h/2h/3h 全负、
+        # rise_since_06=-3、pres_tend_3h=+3.04、wspd=8（平常 1-2）、ts_am=1，
+        # **每个信号都在说今天结束了，模型还报了 +1.9**（实况 rise=0）。
+        #
+        # 缺口一: max_so_far 和 t_now 是两个独立特征，但「已达比现在高多少」
+        # 这个差值不在表里。正常夏天早上它是 0，那天成都是 7。
+        # 15 个月回测（17568 样本）按它分组，偏差**单调翻正**:
+        #   ≈0(83.6%) -0.093 | 0.5-2度 +0.134 | 2-4度 +0.149 | >=4度(2.1%) +0.215
+        # 缺口二: ts_am / ra_am 是 0/1 开关，不区分「飘一阵就放晴」和「下一整天」。
+        "sofar_minus_now": msf - cur["t"],
+        "sofar_hour": float(max((h for h, v in o.items()
+                                 if v["t"] >= msf - 1e-9), default=lh)),
+        "sofar_is_night": 1.0 if min((h for h, v in o.items()
+                                      if v["t"] >= msf - 1e-9), default=lh) < 6 else 0.0,
+        "ts_hours_am": float(sum(1 for v in am if v["ts"])),
+        "ra_hours_am": float(sum(1 for v in am if v["ra"])),
+        "wet_frac_am": (sum(1 for v in am
+                            if v["dewp"] is not None and v["t"] - v["dewp"] < 2.0)
+                        / len(am)) if am else None,
         "prev_tmax": prev[0], "prev_rise": prev[1],
         "clim_rise": clim_r, "clim_peak_h": clim_p,
         "hours_to_peak": None if clim_p is None else clim_p - cutoff,
@@ -533,9 +561,13 @@ CURVE_FEATS = ["trend_4h", "trend_5h", "trend_6h", "curv_2h"]
 if CURVE:
     FEATS.extend(CURVE_FEATS)
 
-# 启用非线性（GBM 融合）的时次。9/10 时 P=100%，11-13 时不显著，故不开 ——
-# 开了等于拿没有证据的改动去动已经稳定的档。cutoff -> GBM 模型的暂存。
-NLIN_CUTOFFS = {9, 10}
+# 启用非线性（GBM 融合）的时次。cutoff -> GBM 模型的暂存。
+#   2026-08-06 首次上线 {9, 10}: 对照纯线性 -0.0372 / -0.0270，P 均 100%
+#   同日加入 11: 「天气型异常」一族让 11 时对照线上纯线性 -0.0179、P=98%
+# 12/13 时仍不开 —— 对照**线上实际配置**只有 P=89% / 81%，不过 95% 的线。
+# （注意 12/13 时曾出现 P=99%，但那是相对「非线性基线」的，而那个基线在
+#  11-13 时根本没上线 —— 拿没上线的东西当基线会高估收益，这次差点踩进去。）
+NLIN_CUTOFFS = {9, 10, 11}
 GBM_STORE = {}
 
 XSTN = os.environ.get("PLOYGON_XSTN") == "1"

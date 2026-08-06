@@ -184,6 +184,30 @@ def fit_block(tr, names, alphas, val_days=90, peak=False, cutoff=12):
                     bw, bm = w, e
             gbm = (g, bw)
 
+        # 直接优化命中率的一路（A/B 测试中，PLOYGON_CLS=1 打开）。
+        #
+        # 动机: 实况温度是整数、已达也是整数，所以 rise 恒是**非负整数** ——
+        # 这本来就是分类问题，被当成回归做了。平方误差优化「离真值多远」，
+        # 而用户的损失是「等不等于真值」，两者在 x.5 附近直接冲突。
+        # 实测: 加了 GBM 之后 MAE 0.7200 -> 0.7042，但完全命中 44.3% -> 44.5%
+        # 几乎没动 —— 误差被压缩了，没被消灭。
+        #
+        # 与已否决的 pred_mode 区分: 那个众数来自 fit_ordinal（**线性**概率模型
+        # 逐个拟合 P(rise>=k) 再差分），代码注释自己写着「尾部标定差」，
+        # 9 时 28.5% vs 均值 36.0%。0/1 损失的最优解**就是**众数，前提是概率
+        # 估得准 —— 之前输在标定，不是输在众数本身。这里换成多分类 GBM 的
+        # 对数损失，那是直接在优化概率标定。
+        #
+        # PLOYGON_CLS_TIE: 前二类概率差小于它时，倒向回归值那一侧。
+        # 防的是「分布平坦时 argmax 每小时翻」——那与「别来回跳」的诉求冲突。
+        cls = None
+        if os.environ.get("PLOYGON_CLS") == "1" and PEAK_GBM:
+            lab = [min(8, max(0, int(round(r["rise"])))) for r in rows_tr]
+            if len(set(lab)) >= 3:
+                cls = _GBC(max_depth=3, max_iter=300, learning_rate=0.06,
+                           min_samples_leaf=20, random_state=0).fit(
+                               _np.asarray(X, float), lab)
+
         q90 = N.fit_quantile(rows_tr, 0.90, best[0], med, names)
         # 方差膨胀用的中心: 训练集上预报升幅的均值。绕它做 pred' = mu + c*(pred-mu)，
         # 双向调整 —— 大升幅往上推、零升幅往下压，不像换 P90 那样单向抬高
@@ -195,7 +219,7 @@ def fit_block(tr, names, alphas, val_days=90, peak=False, cutoff=12):
         return {"median": med, "ridge": best[2], "alpha": best[0],
                 "hurdle": N.fit_hurdle(rows_tr, [best[0]], med, names),
                 "ordinal": N.fit_ordinal(rows_tr, best[0], med, names),
-                "q90": q90, "rise_mu": rise_mu, "gbm": gbm}
+                "q90": q90, "rise_mu": rise_mu, "gbm": gbm, "cls": cls}
 
     # 第一段: 见顶时刻辅助模型。只用训练集拟合，再把预报值注入全部行的特征
     base_names = [n for n in names if n not in PEAK_FEATS]
@@ -317,6 +341,22 @@ def predict(m, rows, names, hurdle, thresh=0.0):
         mod, w = g
         pg = [max(0.0, v) for v in mod.predict(_np.asarray(X, float))]
         out = [w * a + (1 - w) * b for a, b in zip(out, pg)]
+
+    c = m.get("cls")
+    if c is not None:
+        tie = float(os.environ.get("PLOYGON_CLS_TIE") or 0.0)
+        Pm = c.predict_proba(_np.asarray(X, float))
+        ks = list(c.classes_)
+        new = []
+        for p, reg in zip(Pm, out):
+            order = sorted(range(len(ks)), key=lambda i: -p[i])
+            k0 = ks[order[0]]
+            if tie > 0 and len(order) > 1 and p[order[0]] - p[order[1]] < tie:
+                # 前二类难分时，选离回归值更近的那个 —— 平抑逐小时翻转
+                k1 = ks[order[1]]
+                k0 = min((k0, k1), key=lambda k: abs(k - reg))
+            new.append(float(k0))
+        out = new
     return out
 
 

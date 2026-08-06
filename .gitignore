@@ -41,3 +41,4 @@ gfs18.csv
 gfs18*.csv.gz
 nowcast_state.json
 ens.sqlite
+.claude/settings.local.json
