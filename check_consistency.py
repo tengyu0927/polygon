@@ -48,8 +48,8 @@ def check_nowcast(args):
     import predict_nowcast as P
 
     cutoff = int(args.cutoff)
-    # 与 run_hourly.sh 同样的选择逻辑: 9-13 用六模式模型，14/15 用纯实况模型
-    mpath = args.nowcast_model if cutoff <= 13 else args.nowcast_late_model
+    # 与 run_hourly.sh 同样的选择逻辑: 9-14 用六模式模型，15 用纯实况模型
+    mpath = args.nowcast_model if cutoff <= 14 else args.nowcast_late_model
     spec_all = json.load(open(mpath, encoding="utf-8"))
     spec = spec_all.get(str(cutoff))
     print(f"  （{cutoff} 时用 {mpath}）")
@@ -102,8 +102,11 @@ def check_nowcast(args):
         cr = spec["clim_rise"].get(f"{stn}|{mo_}")
         cp = spec["clim_peak"].get(f"{stn}|{mo_}")
         prev = (max(v["t"] for v in ph.values()) if ph else None, cr)
+        # stn_id 必须与 make_samples 一样设上 —— 训练端设了、预测端不设，
+        # 就是本项目最常犯的静默错配（2026-08-07 加这个特征时差点又踩一次）
         f, msf = N.build_feats(o, cutoff, prev, cr, cp,
                                tgt.timetuple().tm_yday, nwp.get(stn))
+        f["stn_id"] = N.STN_IDX.get(stn)
         # 与 predict_nowcast.py 里同一段逻辑
         hist = []
         for k in range(1, 11):
@@ -194,7 +197,7 @@ def check_mos(args):
         # 2026-08-03: 9/10/11 时从 18h 切到 12h（18Z 历史回补完成，
         # 15 个月回测 Δ=-0.0062、P=95.2%）。改这张表必须同步重训，
         # 训练侧对应 gfs_local_build.py --lead 12 出的 mos_local12.csv。
-        want = {9: 12, 10: 12, 11: 12, 12: 6, 13: 6}
+        want = {9: 12, 10: 12, 11: 12, 12: 6, 13: 6, 14: 6}
         tgt = _dt.date.today() + _dt.timedelta(days=1)
         bad = []
         for cut, lead in want.items():

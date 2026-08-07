@@ -142,6 +142,27 @@ REGIME_FEATS = ["sofar_minus_now", "sofar_hour", "sofar_is_night",
 if os.environ.get("PLOYGON_REGIME") == "1":
     FEATS += REGIME_FEATS
 
+# 站点身份（A/B 测试中，PLOYGON_STNID=1 打开）。
+# 起因: 2026-08-07 分站算「16 时后见顶」的判别 AUC，发现各站机制完全不同 ——
+#   上海 风速 0.79 / 上午升温 0.18   青岛 风速 0.72 / 云量 0.72 / 升温 0.25
+#   成都 露点 0.63 / 湿度 0.63，**风速 0.49 无信息**   重庆 风速 0.44（反向）
+# 沿海站是海陆风（风 + 升温慢），盆地站是水汽对流，两套机制相反。
+# 而 2026-08-05 我从 8 站合并的 r=-0.310 得出「静风 -> 晚见顶」是错的:
+# 那是沿海站的信号被平均出来的。
+# 结构缺口: 分站模型（per_station）是**线性**的，非线性那一路（GBM）是**合并**
+# 训练的、看不见站点 —— 「风速在上海重要、在成都不重要」表达不出来。
+# 树模型对整数编码的类别变量能直接切分，所以给一个站点序号即可。
+#
+# **实测无效，已否决（2026-08-07）**: 全部 +0.0002、P=23%，8 个站里 6 个的
+# 差异是**精确的 0.0000** —— GBM 一次都没在这个特征上切分过。
+# 原因: clim_rise 与 clim_peak_h 是「站×月」常数，87 个组合零重复，模型看到
+# clim_rise=4.9 且 clim_peak_h=14.6 就等于知道这是成都 8 月。
+# **站点身份早就在特征里了**，只是以气候态的形式，stn_id 完全冗余。
+# 推论: 「GBM 合并训练所以表达不了分站规则」这个假设是错的 —— 它有能力学，
+# 分站 AUC 的差异（上海风速 0.79 / 成都 0.49）已经反映在现有精度里。
+# 列保留（预测端也一直在设），加回 FEATS 即可重测。
+STN_IDX = {s: float(i) for i, s in enumerate(sorted(NAMES))}
+
 # 特征名 -> mos.csv / daily_features 的列名。午后云量和短波辐射直接决定还能升多少，
 # 只喂 2m 温度等于扔掉模式里最相关的那部分信息。
 NWP_COLS = {
@@ -488,6 +509,7 @@ def make_samples(days, cutoff, clim_r, clim_p, nwp_map, split_year, m2_maps=()):
         f, msf = build_feats(o, cutoff, prev, clim_r.get((stn, mo)),
                              clim_p.get((stn, mo)), dt.timetuple().tm_yday,
                              nwp_map.get((stn, d)))
+        f["stn_id"] = STN_IDX.get(stn)
         if m2_maps:
             add_m2_feats(f, msf, [mm.get((stn, d)) for mm in m2_maps])
         add_interactions(f)
@@ -567,7 +589,9 @@ if CURVE:
 # 12/13 时仍不开 —— 对照**线上实际配置**只有 P=89% / 81%，不过 95% 的线。
 # （注意 12/13 时曾出现 P=99%，但那是相对「非线性基线」的，而那个基线在
 #  11-13 时根本没上线 —— 拿没上线的东西当基线会高估收益，这次差点踩进去。）
-NLIN_CUTOFFS = {9, 10, 11}
+#   2026-08-07 加入 14: 14 时原来用 nowcast_late.json（28 项纯观测、纯线性、
+#     无模式输入），换成六模式+非线性+天气型后 0.3471 -> 0.3330（P=97%）
+NLIN_CUTOFFS = {9, 10, 11, 14}
 GBM_STORE = {}
 
 XSTN = os.environ.get("PLOYGON_XSTN") == "1"

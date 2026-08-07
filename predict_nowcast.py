@@ -419,8 +419,11 @@ def main() -> int:
         cr = spec["clim_rise"].get(f"{stn}|{mo}")
         cp = spec["clim_peak"].get(f"{stn}|{mo}")
         prev = (max(v["t"] for v in ph.values()) if ph else None, cr)
+        # stn_id 必须与 make_samples 一样设上 —— 训练端设了、预测端不设，
+        # 就是本项目最常犯的静默错配（2026-08-07 加这个特征时差点又踩一次）
         f, msf = N.build_feats(o, cutoff, prev, cr, cp,
                                tgt.timetuple().tm_yday, nwp.get(stn))
+        f["stn_id"] = N.STN_IDX.get(stn)
 
         # 近期升幅异常。训练侧在 make_samples 里算，这条推理路径不走那里，
         # 必须在这补齐 —— 否则这两项永远缺测，与训练口径不一致。
