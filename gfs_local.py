@@ -35,10 +35,8 @@ import sqlite3
 import sys
 from collections import defaultdict
 
-STATIONS = {"ZBAA": (40.0801, 116.5846), "ZSPD": (31.1443, 121.8083),
-            "ZGGG": (23.3924, 113.2988), "ZGSZ": (22.6393, 113.8107),
-            "ZUUU": (30.5785, 103.9471), "ZUCK": (29.7192, 106.6417),
-            "ZHHH": (30.7838, 114.2081), "ZSQD": (36.3617, 120.3864)}
+import stations as _S  # 站点清单唯一真相源
+STATIONS = _S.GFS_COORD
 
 # 文件名形如 gfs.t12z.pgrb2.0p25.f018；有的归档还会带日期目录 gfs.20260731/
 FN = re.compile(r"gfs\.t(\d{2})z\.pgrb2\.?(\w*)\.f(\d{3})")

@@ -213,7 +213,9 @@ def check_mos(args):
     except Exception as e:                            # noqa: BLE001
         rep(False, "gfs_live 时效一致性检查", f"{type(e).__name__}: {str(e)[:60]}")
 
-    # 8 个站一个都不能少。2026-08-01 踩过: ZGSZ 换成 WU 序列后只剩 2024-07 起
+    # 站点一个都不能少。数量取自 stations.py（唯一真相源），别再写死数字 ——
+    # 2026-08-08 加郑州/济南时，清单在 17 个文件里各抄一遍，靠这条守卫驱动才
+    # 一处不落地改完。2026-08-01 踩过: ZGSZ 换成 WU 序列后只剩 2024-07 起
     # 的数据，而 climatology() 用 --split-year（默认 2024）卡训练年份，
     # 导致 ZGSZ 在气候态里为空 -> 整个站被静默丢掉，预报表少一行也不报错。
     # 重训必须带 --split-year 2025，见 README「每周重训」。
@@ -227,7 +229,7 @@ def check_mos(args):
                 continue
             got = {k.split("|")[0] for k in blk["clim_rise"]}
             miss = sorted(set(TN.NAMES) - got)
-            rep(not miss, f"{tag} {cut} 时含全部 8 站",
+            rep(not miss, f"{tag} {cut} 时含全部 {len(TN.NAMES)} 站",
                 "" if not miss else f"缺: {miss}（重训漏了 --split-year 2025？）")
 
     leaked = sorted((TM.CONV_COLS | TM.PROF_COLS | TM.BIASW_COLS) & feats)

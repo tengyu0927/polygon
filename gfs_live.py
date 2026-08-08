@@ -48,12 +48,8 @@ UTC = datetime.timezone.utc
 S3 = "https://noaa-gfs-bdp-pds.s3.amazonaws.com"
 UA = "ploygon-nowcast/1.0 (station Tmax research)"
 
-STATIONS = {
-    "ZBAA": (40.0801, 116.5846), "ZSPD": (31.1443, 121.8083),
-    "ZGGG": (23.3924, 113.2988), "ZGSZ": (22.6393, 113.8107),
-    "ZUUU": (30.5785, 103.9471), "ZUCK": (29.7192, 106.6417),
-    "ZHHH": (30.7838, 114.2081), "ZSQD": (36.3617, 120.3864),
-}
+import stations as _S  # 站点清单唯一真相源
+STATIONS = _S.GFS_COORD
 
 # .idx 里的行长这样: 581:426136393:d=2026070218:TMP:2 m above ground:12 hour fcst:
 # 匹配「变量:层次」两段，映射到我们要的名字

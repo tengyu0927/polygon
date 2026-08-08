@@ -42,3 +42,13 @@ gfs18*.csv.gz
 nowcast_state.json
 ens.sqlite
 .claude/settings.local.json
+
+# ---- 本地备份/快照: 体积大、且是一次性的，绝不进版本库 ----
+# 2026-08-08 踩过: git add -A 把 cn.sqlite.bak-before-cleanup (553MB) 和
+# gfs18_8stn.csv.keep (97MB) 一起提交了，推送被 GitHub 的 100MB 硬限制拒掉。
+# *.sqlite 那条规则挡不住带后缀的备份名。
+*.bak-*
+*.keep
+*.orig
+gfs18*.csv
+gfs18*.csv.gz

@@ -36,12 +36,8 @@ CST = timezone(timedelta(hours=8))
 API = "https://previous-runs-api.open-meteo.com/v1/forecast"
 UA = "mos-dataset/1.0 (station Tmax post-processing research)"
 
-STATIONS = {
-    "ZBAA": (40.0801, 116.5846), "ZSPD": (31.1434, 121.8052),
-    "ZGGG": (23.3924, 113.2988), "ZGSZ": (22.6393, 113.8107),
-    "ZUUU": (30.5785, 103.9471), "ZUCK": (29.7192, 106.6417),
-    "ZHHH": (30.7838, 114.2081), "ZSQD": (36.3661, 120.0864),
-}
+import stations as _S  # 站点清单唯一真相源
+STATIONS = _S.COORD
 # 注意: Previous Runs 端点不支持气压层变量（temperature_850hPa 等会报
 # SurfacePressureAndHeightVariable 解析错误）。要高空因子得走 Single Runs API。
 VARS = ["temperature_2m", "cloud_cover", "shortwave_radiation",

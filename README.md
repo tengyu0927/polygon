@@ -2280,20 +2280,105 @@ cutoff)`，重跑覆盖不重复。
 
 2026-07-31 证明了 5 天漂移值 0.12℃ 和 1 个 ±1℃ 站位。改成每周：
 
+**各时次的配置已经不一样了，必须分四段训再合并。** 照旧命令一把梭会把 GBM
+和全部新要素冲掉 —— 而且不报错，只是精度悄悄退回几周前。
+
 ```bash
-python3 merge_mos.py --base mos.csv --extra mos_ecmwf.csv mos_cma.csv \
-    mos_icon.csv mos_jma_.csv mos_gem_.csv --deb --out mos_multi.csv
-python3 train_mos.py mos_multi.csv --obs-pen 1.0 --dump model.json --pred pred.csv
-python3 train_nowcast.py --db cn.sqlite --cutoffs 9 10 11 12 13 --nwp-csv mos.csv \
-    --nwp-csv2 mos_ecmwf.csv mos_cma.csv mos_icon.csv mos_jma_.csv mos_gem_.csv \
-    --split-year 2025 --dump nowcast_nwp.json
-python3 train_nowcast.py --db cn.sqlite --cutoffs 14 15 --split-year 2025 \
+FL="PLOYGON_CONV=1 PLOYGON_PROF=1 PLOYGON_CURVE=1 PLOYGON_WINDAM=1 PLOYGON_HPBL=1"
+M5="mos_ecmwf.csv mos_cma.csv mos_icon.csv mos_jma_.csv mos_gem_.csv"
+
+# D+1/D+2
+python3 merge_mos.py --base mos.csv --extra $M5 --deb --out mos_multi.csv
+python3 train_mos.py mos_multi.csv --obs-pen 1.0 --dump model.json
+
+# 临近: 9 时（非线性+要素，不含 REGIME —— 那里 P=32% 反而略差）
+env $FL python3 train_nowcast.py --db cn.sqlite --cutoffs 9 --nwp-csv mos.csv \
+    --nwp-csv2 $M5 mos_local12.csv --split-year 2025 --dump nc_a.json
+# 临近: 10/11 时（再加 REGIME 天气型）
+env $FL PLOYGON_REGIME=1 python3 train_nowcast.py --db cn.sqlite --cutoffs 10 11 \
+    --nwp-csv mos.csv --nwp-csv2 $M5 mos_local12.csv --split-year 2025 --dump nc_b.json
+# 临近: 12/13 时（保持线性，加要素/GBM 均未过 95% 线）
+python3 train_nowcast.py --db cn.sqlite --cutoffs 12 13 --nwp-csv mos.csv \
+    --nwp-csv2 $M5 mos_local12.csv --split-year 2025 --dump nc_c.json
+# 临近: 14 时（时效换成 6h，所以用 mos_local6.csv）
+env $FL PLOYGON_REGIME=1 python3 train_nowcast.py --db cn.sqlite --cutoffs 14 \
+    --nwp-csv mos.csv --nwp-csv2 $M5 mos_local6.csv --split-year 2025 --dump nc_d.json
+# 15 时仍是纯实况模型（换成六模式会整体变差，P=19%）
+python3 train_nowcast.py --db cn.sqlite --cutoffs 15 --split-year 2025 \
     --dump nowcast_late.json
+
+# 合并 JSON + 合并 GBM 边文件
+python3 - <<'PY'
+import json, pickle
+m = {}
+for f in ("nc_a.json", "nc_b.json", "nc_c.json", "nc_d.json"):
+    m.update(json.load(open(f)))
+json.dump(m, open("nowcast_nwp.json", "w"), ensure_ascii=False, indent=1)
+g = {}
+for f in ("nc_a.json.gbm.pkl", "nc_b.json.gbm.pkl", "nc_d.json.gbm.pkl"):
+    g.update(pickle.load(open(f, "rb")))
+pickle.dump(g, open("nowcast_nwp.json.gbm.pkl", "wb"))
+PY
+rm -f nc_?.json nc_?.json.gbm.pkl
+
+# **模型一变，预期命中率的查表也必须重建**，否则印出来的是旧模型的把握
+env $FL PLOYGON_REGIME=1 PLOYGON_NLIN=1 python3 backtest_nowcast.py --db cn.sqlite \
+    --cutoffs 9 10 11 12 13 14 --start 2025-05-01 --end <今天> --nwp-csv mos.csv \
+    --nwp-csv2 $M5 mos_local12.csv --csv-out bt_cur.csv
+python3 backtest_nowcast.py --db cn.sqlite --cutoffs 15 \
+    --start 2025-05-01 --end <今天> --csv-out bt_cur15.csv
+python3 build_hit_table.py bt_cur.csv bt_cur15.csv --out hit_table.json
+
 python3 check_consistency.py     # 重训后必跑
 ```
 
 训练数据由 `run_daily.sh` 每天自动刷新，所以随时可以重训。
 `run_daily.sh` 也会在模型超过 7 天未重训时打 `[WARN]` 并附上命令。
+
+
+### 「预期命中率」这一列（2026-08-08 上线）
+
+两周生产 752 条 + 15 个月回测得到同一条结论 —— **决定准不准的不是「今天什么
+天气」，而是「起报那一刻这一天还剩多少没发生」**:
+
+| 起报时剩余升幅 | 样本 | MAE | 完全命中 | 偏差 |
+|---|---|---|---|---|
+| ≤0.5 度 | 263 | **0.32** | **72%** | +0.32 |
+| 0.5-2 度 | 278 | 0.66 | 40% | −0.38 |
+| 2-4 度 | 139 | 1.14 | 28% | −0.94 |
+| >4 度 | 72 | **1.42** | **21%** | **−1.28** |
+
+**反例就在 2026-08-08**: 上海风速异常 +5.3σ（全场最大）却 9 档全对；成都零异常
+却误差 1.43（全场最差）。挨个查过露点/湿度/气压/云量/对流/边界层，
+**没有任何单要素能独立预测误差**。
+
+`build_hit_table.py` 把这条结论做成「起报时次 × 预计再升」的查表，
+`predict_nowcast.py` 每行印一个预期命中率。**不改任何预报值**，只是把
+「这个数该不该信」量化出来。0.5 度以下还有很强梯度，所以低端细分:
+
+| 时次 | ≤0.1 | 0.1-0.25 | 0.25-0.5 | 0.5-1 | 1-2 | >2 |
+|---|---|---|---|---|---|---|
+| 9 时 | **90%** | 82% | 70% | 32% | 35% | 33% |
+| 11 时 | **89%** | 83% | 68% | 44% | 38% | 38% |
+| 13 时 | **93%** | 82% | 70% | 43% | 43% | 40% |
+| 15 时 | **97%** | 85% | 69% | 38% | — | — |
+
+**「预计再升 ≤0.1 度」在 9 时就有 90%**，与 15 时的 97% 同一量级；
+而 >0.5 度的不管几点都只有 32-44%。这也再次印证: 命中率几乎不随时次变化，
+时间只是把不确定的情况物理性地消解掉。
+
+#### 顺带重测: 迟滞该开到几点（结论不变）
+
+新配置下重测（3600 站日）:
+
+| 方案 | 空转 | 降幅 | 13时命中 | 全部命中 |
+|---|---|---|---|---|
+| 无迟滞 | 1.43 | — | 58% | 54.54% |
+| **9-12 时 0.2（现状）** | 0.99 | **31%** | 58% | **54.49%（−0.06pt）** |
+| 9-13 时 0.2 | 0.85 | 40% | **57%** | 54.28%（−0.26pt） |
+| 9-14 时 0.2 | 0.76 | 47% | 57% | 54.06%（−0.48pt） |
+
+扩到 13 时会让 13 时自己掉 1pt，多换的 9% 空转削减不值。**维持 9-12 时。**
 
 
 ### 日常怎么用：三步，不用每天判断
@@ -3332,3 +3417,51 @@ Open-Meteo 的六个模式对欧美日韩的覆盖只会比中国区更好。
 **复杂度会实质性增长**：判读规则从 1 套变 N 套、cron 要按站分组、
 `verify.py` 报表要分区域、一致性检查要覆盖多时区。
 加站前先想清楚多几个站对实际用途的价值是否配得上这些成本。
+
+
+### 2026-08-08: 加郑州/济南两站（进行中）
+
+#### stations.py —— 站点清单的唯一真相源
+
+加站前清点，发现清单硬编码在 **17 个文件**里，三种形式（ICAO→经纬度 7 处、
+ICAO→中文名 7 处、逗号串 3 处）。全部改为 `import stations`。
+
+清点时当场发现一处**活着的不一致**: 青岛经度在 `build_mos_dataset.py` 里是
+`120.0864`（胶东机场，正确），在另外 6 个取模式数据的文件里是 `120.3864` ——
+差 0.3 度约 27 公里，**在 0.25 度网格上是不同格点**。也就是 Open-Meteo 六模式
+取的是胶东、本地 GFS 取的是别处。`120.3864` 既不是胶东也不是流亭
+（`120.3744`），像是 `0864` 打成 `3864`；流亭 2021 年已关闭。
+
+**没有顺手改** —— 现有归档和模型都是按旧坐标训的。`LEGACY_GFS_COORD` 保留旧值
+使行为逐位不变；同时在为新站重下 GRIB 的那一趟里额外抽一个 `ZSQD_NEW` 点
+（同一份缓冲，成本≈0），之后用 A/B 决定切不切。
+
+#### 两个新站的数据源不同
+
+| | IEM | WU | 结论 |
+|---|---|---|---|
+| **ZHCC 郑州** | 1995 起，720 条/月，逐时 | 2020 起逐时 | 与原 8 站同源 |
+| **ZSJN 济南** | **42-81 条/月（每天 1-2 条）** | 2020 起逐时 | **只能走 WU** |
+
+济南在 IEM 上根本不是逐时观测，而 `morning()` 要求截止前至少 5 条。
+已建库: 郑州 213591 条 / 11542 天；济南 39730 条 / 1832 天。
+
+#### 事故: 灌济南时污染了深圳的历史（已修复）
+
+`wu_obs.to_rows()` 把模块级常量 `STATION`（=`"ZGSZ"`）硬写进行的第一个字段。
+泛化 `ingest` 支持多站时**漏了这个函数**，于是济南的观测被按 ZGSZ 写进 `obs`
+表 —— 深圳 2020-01 ~ 2024-07 被塞进 **25344 行济南数据**（1 月均温 −1℃，
+而深圳应是 16℃），直到撞上 `UNIQUE(station, valid_time_gmt)` 才崩。
+
+修复:
+1. 用**温度气候态**定位污染（1 月 −1℃ vs 16℃，一眼可辨）
+2. 备份 `cn.sqlite.bak-before-cleanup`
+3. 删掉 ZGSZ 在 `FIRST_DAY`（2024-07-10）之前的全部行 —— 迁移后那里本来
+   一行都不该有，边界干净
+4. 根因: `to_rows(obs, station)` 现在必须收站号；另一处调用点
+   `predict_nowcast.py` 一并带上
+5. 复核: 深圳恢复 16328 行 / 2024-07-10 起、1 月 16.1℃；其余 8 站未受影响
+
+**教训**: 泛化一个函数时，参数化了入口却漏了内部的隐式全局。这次靠主键冲突
+暴露；如果两站的时间戳没撞上，它会**静默污染**。与本项目反复踩的
+「训练端设了、预测端没设」是同一类病。

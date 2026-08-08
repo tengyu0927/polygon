@@ -17,7 +17,8 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-STATIONS=ZSPD,ZUUU,ZGSZ,ZGGG,ZUCK,ZBAA,ZHHH,ZSQD
+# 站点清单与 stations.py 保持一致（唯一真相源）。改站点先改那里
+STATIONS=ZBAA,ZGGG,ZGSZ,ZHCC,ZHHH,ZSJN,ZSPD,ZSQD,ZUCK,ZUUU
 # 顺序必须与 merge_mos.py --extra、run_*.sh 的 MODELS 一致
 MODELS=(
   "mos_fcst  gfs_global                      mos.csv"

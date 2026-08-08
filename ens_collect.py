@@ -43,12 +43,8 @@ import urllib.request
 CST = datetime.timezone(datetime.timedelta(hours=8))
 UTC = datetime.timezone.utc
 
-STATIONS = {
-    "ZBAA": (40.0801, 116.5846), "ZSPD": (31.1443, 121.8083),
-    "ZGGG": (23.3924, 113.2988), "ZGSZ": (22.6393, 113.8107),
-    "ZUUU": (30.5785, 103.9471), "ZUCK": (29.7192, 106.6417),
-    "ZHHH": (30.7838, 114.2081), "ZSQD": (36.3617, 120.3864),
-}
+import stations as _S  # 站点清单唯一真相源
+STATIONS = _S.COORD
 MODELS = ["ecmwf_ifs025", "gfs05", "icon_seamless", "gem_global"]
 API = "https://ensemble-api.open-meteo.com/v1/ensemble"
 

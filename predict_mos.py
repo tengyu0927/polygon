@@ -35,9 +35,8 @@ import train_mos as T                  # noqa: E402
 
 CST = timezone(timedelta(hours=8))
 
-NAMES = {"ZBAA": "北京首都", "ZSPD": "上海浦东", "ZGGG": "广州白云",
-         "ZGSZ": "深圳宝安", "ZUUU": "成都双流", "ZUCK": "重庆江北",
-         "ZHHH": "武汉天河", "ZSQD": "青岛胶东"}
+import stations as _S  # 站点清单唯一真相源
+NAMES = _S.NAMES
 
 
 def fetch_window(stations, d0: date, d1: date, model: str, vars_: list[str]):

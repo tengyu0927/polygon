@@ -30,7 +30,8 @@ trap 'rm -rf "$LOCK"' EXIT
 
 
 
-STATIONS=ZSPD,ZUUU,ZGSZ,ZGGG,ZUCK,ZBAA,ZHHH,ZSQD
+# 站点清单与 stations.py 保持一致（唯一真相源）。改站点先改那里
+STATIONS=ZBAA,ZGGG,ZGSZ,ZHCC,ZHHH,ZSJN,ZSPD,ZSQD,ZUCK,ZUUU
 # UKMO 已剔除: 归档只到 2025-01，训练期大半缺测，实测拖累 D+2（见 README）
 # 第七个成员 local_gfs 不走 Open-Meteo,而是实时从 NCEP 取当时能拿到的
 # 最新一轮 GFS(gfs_live.py)。顺序必须与训练时 --nwp-csv2 一致,放最后。

@@ -47,12 +47,8 @@ CST = datetime.timezone(datetime.timedelta(hours=8))
 S3 = "https://noaa-gfs-bdp-pds.s3.amazonaws.com"
 UA = "ploygon-nowcast/1.0 (station Tmax research)"
 
-STATIONS = {
-    "ZBAA": (40.0801, 116.5846), "ZSPD": (31.1443, 121.8083),
-    "ZGGG": (23.3924, 113.2988), "ZGSZ": (22.6393, 113.8107),
-    "ZUUU": (30.5785, 103.9471), "ZUCK": (29.7192, 106.6417),
-    "ZHHH": (30.7838, 114.2081), "ZSQD": (36.3617, 120.3864),
-}
+import stations as _S  # 站点清单唯一真相源
+STATIONS = _S.GFS_COORD_EXTRACT
 
 # (.idx 的变量段, 层次段) -> 我们的名字。与 gfs_live.WANT 保持一致
 WANT = {

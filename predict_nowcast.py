@@ -105,7 +105,7 @@ def _overwrite_from_wu(days, stations, tgt, db):
             d = tgt - timedelta(days=k)
             try:
                 rows = WO.to_rows(WO.wu_obs(s, d.strftime("%Y%m%d"),
-                                            d.strftime("%Y%m%d"), retries=2))
+                                            d.strftime("%Y%m%d"), retries=2), s)
             except Exception as e:
                 print(f"[warn] WU 取 {s} {d} 失败: {str(e)[:60]}", file=sys.stderr)
                 rows = {}
@@ -363,7 +363,10 @@ def main() -> int:
     print(f"临近预报  目标日 {tgt}  截止 {cutoff:02d} 时（北京时）  "
           f"{src}")
     p90_col = f"{'不排除':>8}" if args.p90 else ""
-    print(f"\n  {'站点':<14}{'预报':>7}{p90_col}{'已达':>7}{'预计再升':>10}{'把握':>6}   备注")
+    _hdr_eh = f"{'预期命中':>7}" if os.path.exists(
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "hit_table.json")) else ""
+    print(f"\n  {'站点':<14}{'预报':>7}{p90_col}{'已达':>7}{'预计再升':>10}"
+          f"{_hdr_eh}{'把握':>6}   备注")
 
     # 迟滞用的上一轮报出去的整数。报的是整数，连续值在 x.5 附近抖 0.02 度就会
     # 让整数翻个个儿 —— 15 个月回测里 61% 的逐小时改动是这种空转（动出去又回来）。
@@ -398,6 +401,32 @@ def main() -> int:
         except Exception as e:                          # noqa: BLE001
             print(f"[warn] GBM 没读成（{str(e)[:60]}），本轮只用线性", file=sys.stderr)
             _GBM, _NP = {}, None
+
+    # 「预期命中率」查表（build_hit_table.py 生成）。**不改任何预报值**，
+    # 只是把「这个数该不该信」量化出来印在旁边。两周生产 752 条 + 15 个月回测
+    # 都指向同一条主线: 决定准不准的是「起报那一刻还剩多少没发生」，不是
+    # 「今天什么天气」—— 剩 <=0.5 度时完全命中 72%、剩 >4 度时只有 21%。
+    # 读不到表就整列不显示，绝不影响预报。
+    _hit = {}
+    try:
+        _hp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hit_table.json")
+        if os.path.exists(_hp):
+            _hit = json.load(open(_hp, encoding="utf-8"))
+    except Exception:                                  # noqa: BLE001
+        _hit = {}
+
+    def _exp_hit(cut, rise):
+        if not _hit:
+            return None
+        b = 0
+        for i, e in enumerate(_hit.get("edges", []) + [float("inf")]):
+            if rise <= e:
+                b = i
+                break
+        v = _hit.get("cells", {}).get(f"{cut}|{b}")
+        if v:
+            return v[0]
+        return _hit.get("per_cutoff", {}).get(str(cut), _hit.get("global"))
 
     names, med = spec["names"], spec["median"]
     warned_p90 = False
@@ -525,10 +554,12 @@ def main() -> int:
         # 命中率几乎不随时次变化，变的只有覆盖率 —— 预报不会随时间"变准"，
         # 时间只是把不确定的情况物理性地消解掉。
         conf = "已定" if rise < 0.15 else ("大致" if rise < 0.5 else "")
+        eh = _exp_hit(cutoff, rise)
+        ehs = f"{eh:>7.0%}" if eh is not None else ""
         pc = (f"{round(p90):>8}" if p90 is not None
               else (f"{'--':>8}" if args.p90 else ""))
         print(f"  {stn} {N.NAMES.get(stn,''):<9}{shown:>7}{pc}{msf:>7.0f}"
-              f"{rise:>+10.1f}{conf:>6}   {note}")
+              f"{rise:>+10.1f}{ehs}{conf:>6}   {note}")
         rows_out.append((stn, shown, msf, rise))
 
     if args.compare and os.path.exists(args.compare):

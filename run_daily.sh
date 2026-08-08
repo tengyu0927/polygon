@@ -35,7 +35,8 @@ trap 'rm -rf "$LOCK"' EXIT
 
 
 
-STATIONS=ZSPD,ZUUU,ZGSZ,ZGGG,ZUCK,ZBAA,ZHHH,ZSQD
+# 站点清单与 stations.py 保持一致（唯一真相源）。改站点先改那里
+STATIONS=ZBAA,ZGGG,ZGSZ,ZHCC,ZHHH,ZSJN,ZSPD,ZSQD,ZUCK,ZUUU
 # UKMO 已剔除: 归档只到 2025-01，训练期大半缺测，实测显著拖累 D+2
 MODELS=ecmwf_ifs025,cma_grapes_global,icon_global,jma_gsm,gem_global
 # 顺序必须与 merge_mos.py --extra 的顺序一致，否则 m2_/m3_ 各列对错模式
@@ -55,7 +56,8 @@ if [[ -z "$NOUPDATE" ]]; then
     python3 iem_multi.py --db cn.sqlite --stations "$STATIONS" \
         --recent-days 5 --timeout 180 >/dev/null 2>&1 \
         || echo "[warn] 实况增量更新失败，recent_bias 可能滞后" >&2
-    # ZGSZ 覆盖成 WU（香港流浮山）—— 必须在 iem_multi 之后、建日表之前
+    # WU 站（深圳=流浮山、济南=IEM 没有逐时）覆盖成 WU 序列 ——
+    # 必须在 iem_multi 之后、建日表之前
     python3 wu_obs.py --db cn.sqlite --update --days 5 >/dev/null 2>&1 \
         || echo "[warn] WU 实况更新失败，ZGSZ 可能用到陈旧数据" >&2
     python3 iem_multi.py --db cn.sqlite --daily >/dev/null 2>&1 || true
@@ -97,9 +99,9 @@ rows = list(c.execute(
     "SELECT station, COUNT(*), "
     "MAX(CAST(strftime('%H', datetime(obs_time_utc,'+8 hours')) AS INT)) "
     "FROM obs WHERE local_date=? GROUP BY station", ("$TODAY",)))
-if len(rows) < 8:
-    have = {r[0] for r in rows}
-    print(f"[WARN] 今日只有 {len(rows)}/8 个站有观测，recent_bias 会退化")
+import stations as S
+if len(rows) < len(S.ICAOS):
+    print(f"[WARN] 今日只有 {len(rows)}/{len(S.ICAOS)} 个站有观测，recent_bias 会退化")
 short = [(r[0], r[2]) for r in rows if r[2] is None or r[2] < 18]
 if short:
     print("[WARN] 观测没盖过峰值时段（recent_bias 会偏低、预报系统性偏冷）:")

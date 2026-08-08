@@ -60,16 +60,8 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 # 8 个机场。经度用 0-360，与 GFS 网格一致（脚本内部会同时兼容 -180~180）
-STATIONS = {
-    "ZBAA": (40.0801, 116.5846),   # 北京首都
-    "ZSPD": (31.1443, 121.8083),   # 上海浦东
-    "ZGGG": (23.3924, 113.2988),   # 广州白云
-    "ZGSZ": (22.6393, 113.8107),   # 深圳宝安
-    "ZUUU": (30.5785, 103.9471),   # 成都双流
-    "ZUCK": (29.7192, 106.6417),   # 重庆江北
-    "ZHHH": (30.7838, 114.2081),   # 武汉天河
-    "ZSQD": (36.3617, 120.3864),   # 青岛胶东
-}
+import stations as _S  # 站点清单唯一真相源
+STATIONS = _S.GFS_COORD
 
 # 想要的变量。key 是 cfgrib/pygrib 里的短名，值是给人看的说明。
 # t2m 是必须的，其余有就抽、没有就跳过。

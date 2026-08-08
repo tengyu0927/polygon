@@ -56,16 +56,12 @@ UA = "live-tmax-monitor/1.0 (station monitoring; contact: local user)"
 
 CN_TZ = timezone(timedelta(hours=8))
 
-# ZSQD 以前漏在这里，而它恰好常是各方法分歧最大的站，晚上核对时看不到它
-DEFAULT_STATIONS = ["ZSPD", "ZUUU", "ZGSZ", "ZGGG", "ZSQD",
-                    "ZUCK", "ZBAA", "ZHHH",]
+# ZSQD 以前漏在这里，而它恰好常是各方法分歧最大的站，晚上核对时看不到它。
+# 2026-08-08 起改从 stations.py 取 —— 站点清单只有一处真相源，不再各抄一遍
+import stations as _S
+DEFAULT_STATIONS = _S.ICAOS
 
-CN_NAME = {
-    "ZSPD": "上海浦东", "ZUUU": "成都双流", "ZGSZ": "深圳宝安",
-    "ZGGG": "广州白云", "ZUCK": "重庆江北", "ZBAA": "北京首都",
-    "ZSQD": "青岛胶东",
-    "ZHHH": "武汉天河",
-}
+CN_NAME = _S.NAMES
 
 # ANSI 颜色，--no-color 或非 tty 时自动关闭
 class C:

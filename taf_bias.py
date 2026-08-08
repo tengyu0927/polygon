@@ -42,10 +42,8 @@ CST = timezone(timedelta(hours=8))
 BASE = "https://aviationweather.gov/api/data"
 UA = "taf-bias/1.0 (station Tmax verification research)"
 
-STATIONS = {
-    "ZBAA": "北京首都", "ZSPD": "上海浦东", "ZGGG": "广州白云", "ZGSZ": "深圳宝安",
-    "ZUUU": "成都双流", "ZUCK": "重庆江北", "ZHHH": "武汉天河", "ZSQD": "青岛胶东",
-}
+import stations as _S  # 站点清单唯一真相源
+STATIONS = _S.NAMES
 PEAK_H0, PEAK_H1 = 10, 19          # 午后峰值时段(北京时)
 MIN_PEAK_OBS = 6                   # 峰值时段最少观测条数，不足则该日不参与
 

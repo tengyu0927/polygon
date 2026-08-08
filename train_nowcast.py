@@ -40,9 +40,10 @@ import train_mos as T                      # 复用 ridge_fit / ridge_pred / sc 
 UTC = timezone.utc
 CST = timezone(timedelta(hours=8))
 
-NAMES = {"ZBAA": "北京首都", "ZSPD": "上海浦东", "ZGGG": "广州白云",
-         "ZGSZ": "深圳宝安", "ZUUU": "成都双流", "ZUCK": "重庆江北",
-         "ZHHH": "武汉天河", "ZSQD": "青岛胶东"}
+# 站点清单只有一处真相源 —— stations.py。2026-08-08 之前这份表在 17 个文件里
+# 各抄一遍，出过两次静默事故，还留着一处 27 公里的坐标不一致。
+import stations as _S                      # noqa: E402
+NAMES = _S.NAMES
 
 # METAR 云量编码 -> 云量分数
 CLOUD = {"CLR": 0.0, "SKC": 0.0, "NCD": 0.0, "NSC": 0.0, "CAVOK": 0.0,
@@ -595,6 +596,9 @@ NLIN_CUTOFFS = {9, 10, 11, 14}
 GBM_STORE = {}
 
 XSTN = os.environ.get("PLOYGON_XSTN") == "1"
+# 2026-08-08 加郑州/济南时未给伙伴 —— 伙伴是按 2010 起夏季日最高温距平的
+# 同日相关实测选的，没跑过就不该编。XSTN 已否决、不在 FEATS 里，
+# 且下面用的是 .get(stn, ())，缺站不会报错。重开 XSTN 时要先补这两站的相关。
 XPARTNER = {                       # 站 -> 两个伙伴站（按上面的相关排序取前二）
     "ZBAA": ("ZSQD", "ZSPD"), "ZSPD": ("ZHHH", "ZUCK"),
     "ZGGG": ("ZGSZ", "ZSPD"), "ZGSZ": ("ZGGG", "ZSPD"),

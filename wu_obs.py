@@ -56,10 +56,20 @@ from datetime import date, datetime, timedelta, timezone
 
 API_KEY = "e1f10a1e78da46f5b10a1e78da96f525"
 CST = timezone(timedelta(hours=8))
-STATION = "ZGSZ"
-BACKUP_TABLE = "obs_zgsz_metar"
+# 2026-08-08: 从只服务 ZGSZ 改成多站。站点清单取自 stations.WU_STATIONS。
+#   ZGSZ 深圳: WU 挂的是流浮山，归档 2024-07-10 起变密（之前 8 条/天）
+#   ZSJN 济南: **IEM 上根本没有逐时数据**（42-81 条/月，每天 1-2 条），
+#              只能整站走 WU；实测 2020 年起逐时齐全
+# 每站的起始日与最小条数不同，所以按站配置，别再用一个全局常量。
+import stations as _S                      # noqa: E402
+STATION = "ZGSZ"                           # 兼容旧调用；实际按 --stations 走
+BACKUP_TABLE = "obs_zgsz_metar"            # 只有 ZGSZ 有 METAR 需要备份
 MIN_OBS = 18          # 一天少于这么多条就不收 —— 三小时一次的日子上午只有 2 条
 FIRST_DAY = "2024-07-10"   # 流浮山归档变密的起点，之前是 8 条/天
+PER_STATION = {
+    "ZGSZ": {"first": "2024-07-10", "min_obs": 18},
+    "ZSJN": {"first": "2020-01-01", "min_obs": 18},
+}
 
 
 def wu_obs(station, start, end, retries=3):
@@ -89,12 +99,19 @@ def months(a: date, b: date):
         cur = nxt
 
 
-def to_rows(obs):
+def to_rows(obs, station=None):
     """WU 观测 -> obs 表的行。返回 {北京时日期: [行, ...]}。
+
+    **station 必须传。** 2026-08-08 踩过: 这个函数原来把模块级常量 STATION
+    （="ZGSZ"）硬写进第一个字段，泛化 ingest 支持多站时漏了这里，于是灌济南
+    时把济南的观测按 ZGSZ 写进 obs 表 —— 深圳 2020-01~2024-07 被写进 25344 行
+    济南数据（1 月均温 -1℃ 而深圳应是 16℃），直到撞上主键冲突才崩。
+    默认值只为兼容旧调用，新代码一律显式传。
 
     WU 不提供 skyc1 / wxcodes / vis_km，这几列写 NULL；
     train_nowcast.matrix() 会用中位数填补并加缺测指示位。
     """
+    stn = station or STATION
     by_day = {}
     for x in obs:
         if x.get("temp") is None:
@@ -103,7 +120,7 @@ def to_rows(obs):
         dt = datetime.fromtimestamp(ts, timezone.utc)
         d = dt.astimezone(CST).strftime("%Y-%m-%d")
         by_day.setdefault(d, []).append((
-            STATION,
+            stn,
             ts,                                   # valid_time_gmt
             dt.strftime("%Y-%m-%dT%H:%M:%SZ"),    # obs_time_utc
             d,                                    # local_date
@@ -130,12 +147,13 @@ COLS = ("station, valid_time_gmt, obs_time_utc, local_date, temp_c, dewp_c, rh, 
         "wxcodes, feel_c, metar")
 
 
-def ingest(conn, a: date, b: date, min_obs=MIN_OBS, sleep=0.35):
-    """抓 [a,b] 的 WU 观测，替换 obs 表里 ZGSZ 对应日期的行。"""
+def ingest(conn, a: date, b: date, min_obs=MIN_OBS, sleep=0.35, station=None):
+    """抓 [a,b] 的 WU 观测，替换 obs 表里该站对应日期的行。"""
+    STATION = station or globals()["STATION"]
     total = skipped = 0
     for x0, x1 in months(a, b):
         obs = wu_obs(STATION, x0.strftime("%Y%m%d"), x1.strftime("%Y%m%d"))
-        by_day = to_rows(obs)
+        by_day = to_rows(obs, STATION)
         for d, rows in sorted(by_day.items()):
             # 当天还没走完，条数天然少，不能按 min_obs 卡掉
             today = datetime.now(CST).strftime("%Y-%m-%d")
@@ -147,7 +165,8 @@ def ingest(conn, a: date, b: date, min_obs=MIN_OBS, sleep=0.35):
                 f"INSERT INTO obs ({COLS}) VALUES ({','.join('?' * 18)})", rows)
             total += len(rows)
         conn.commit()
-        print(f"  {x0}~{x1}  写入 {sum(len(v) for v in by_day.values()):>5} 条", file=sys.stderr)
+        print(f"  {STATION} {x0}~{x1}  写入 "
+              f"{sum(len(v) for v in by_day.values()):>5} 条", file=sys.stderr)
         time.sleep(sleep)
     return total, skipped
 
@@ -197,18 +216,37 @@ def main() -> int:
     ap.add_argument("--days", type=int, default=5, help="--update 回看几天（含当天）")
     ap.add_argument("--first", default=FIRST_DAY)
     ap.add_argument("--min-obs", type=int, default=MIN_OBS)
+    ap.add_argument("--stations", default=",".join(sorted(_S.WU_STATIONS)),
+                    help="逗号分隔；默认 stations.WU_STATIONS")
+    ap.add_argument("--backfill", action="store_true",
+                    help="按 PER_STATION 的起始日灌全历史（新站首次用）")
     args = ap.parse_args()
+    stns = [x.strip().upper() for x in args.stations.split(",") if x.strip()]
 
     conn = sqlite3.connect(args.db)
     if args.migrate:
         return migrate(conn, args)
     if args.restore:
         return restore(conn, args)
+    if args.backfill:
+        for s in stns:
+            cfg = PER_STATION.get(s, {})
+            a = date.fromisoformat(cfg.get("first", args.first))
+            b = datetime.now(CST).date()
+            n, sk = ingest(conn, a, b, cfg.get("min_obs", args.min_obs), station=s)
+            print(f"[{s}] 全历史 {a} ~ {b}: 写入 {n} 条，跳过 {sk} 天",
+                  file=sys.stderr)
+        return 0
     if args.update:
         b = datetime.now(CST).date()
         a = b - timedelta(days=args.days - 1)
-        total, skipped = ingest(conn, a, b, args.min_obs)
-        print(f"更新 {a} ~ {b}: 写入 {total} 条", file=sys.stderr)
+        tot = 0
+        for s in stns:
+            n, sk = ingest(conn, a, b,
+                           PER_STATION.get(s, {}).get("min_obs", args.min_obs),
+                           station=s)
+            tot += n
+        print(f"更新 {a} ~ {b}: {len(stns)} 个站共写入 {tot} 条", file=sys.stderr)
         return 0
     ap.print_help()
     return 1

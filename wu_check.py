@@ -50,9 +50,8 @@ import urllib.request
 from datetime import date, timedelta
 
 API_KEY = "e1f10a1e78da46f5b10a1e78da96f525"
-NAMES = {"ZBAA": "北京首都", "ZSPD": "上海浦东", "ZGGG": "广州白云",
-         "ZGSZ": "深圳宝安", "ZUUU": "成都双流", "ZUCK": "重庆江北",
-         "ZHHH": "武汉天河", "ZSQD": "青岛胶东"}
+import stations as _S  # 站点清单唯一真相源
+NAMES = _S.NAMES
 
 # WU 的 ZGSZ 挂的是香港流浮山，不是深圳宝安。核对时单独标注，别当成我们的 bug。
 MISMATCHED = {"ZGSZ": "WU 挂的是 Lau Fau Shan（香港流浮山，WMO 45035）"}
