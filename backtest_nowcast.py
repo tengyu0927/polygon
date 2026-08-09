@@ -409,6 +409,9 @@ def main() -> int:
     ap.add_argument("--no-hurdle", action="store_true")
     ap.add_argument("--daily", action="store_true", help="逐日逐站明细")
     ap.add_argument("--csv-out", default="", help="把逐日结果写 CSV")
+    ap.add_argument("--stations", default="",
+                    help="逗号分隔，只用这些站训练+评估。加站时做「加站前 vs 加站后」"
+                         "的对照要用它 —— 否则两臂的训练集不同，比的不是同一件事")
     args = ap.parse_args()
 
     s = datetime.strptime(args.start, "%Y-%m-%d").date()
@@ -416,6 +419,10 @@ def main() -> int:
 
     print("读取逐时实况…", file=sys.stderr)
     days = N.load_hourly(args.db, args.table)
+    if args.stations:
+        _keep = {x.strip().upper() for x in args.stations.split(",") if x.strip()}
+        days = {k: v for k, v in days.items() if k[0] in _keep}
+        print(f"  只用 {len(_keep)} 个站: {sorted(_keep)}", file=sys.stderr)
     print(f"  {len(days)} 个可用站日", file=sys.stderr)
 
     nwp_map = {}
