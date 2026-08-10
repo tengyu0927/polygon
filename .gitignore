@@ -52,3 +52,5 @@ ens.sqlite
 *.orig
 gfs18*.csv
 gfs18*.csv.gz
+bt_*.csv
+*.keep

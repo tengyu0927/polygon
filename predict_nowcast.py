@@ -27,6 +27,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) or ".")
+import stations as _S                     # noqa: E402  站点清单唯一真相源
 import train_mos as T                      # noqa: E402
 import train_nowcast as N                  # noqa: E402
 
@@ -90,10 +91,12 @@ CST = timezone(timedelta(hours=8))
 AWC = "https://aviationweather.gov/api/data/metar"
 UA = "nowcast/1.0 (station Tmax research)"
 
-# 这些站的实况以 Weather Underground 为准，不能用 AWC 的 METAR。
-# ZGSZ: WU 的 ZGSZ:9:CN 返回的是 Lau Fau Shan（香港流浮山，WMO 45035），
-# 离深圳宝安 30km，而打分以 WU 为准，所以模型也训练在这条序列上（见 wu_obs.py）。
-WU_STATIONS = {"ZGSZ"}
+# 这些站的实况以 Weather Underground 为准，不能用 AWC/IEM 的 METAR。
+# **清单取自 stations.py，别在这里再抄一份** —— 2026-08-10 踩过: 加济南时
+# stations.WU_STATIONS 加上了 ZSJN，这里却还写死 {"ZGSZ"}，于是济南走不到
+# WU 实时取数那条路、只能读库，而库里当天只到 11 时 -> 12 时起直接「无今日观测」。
+# 与 to_rows 硬写 STATION、stn_id 训练端设了预测端没设是同一类病。
+WU_STATIONS = _S.WU_STATIONS
 
 
 def _overwrite_from_wu(days, stations, tgt, db):
@@ -128,7 +131,8 @@ def _overwrite_from_wu(days, stations, tgt, db):
             days.pop(k)
         days.update(got)
         n = len(got.get((s, tgt.isoformat()), {}))
-        print(f"  {s} 改用 WU 实况（Lau Fau Shan），当天 {n} 个小时", file=sys.stderr)
+        site = "Lau Fau Shan" if s == "ZGSZ" else "WU 站"
+        print(f"  {s} 改用 WU 实况（{site}），当天 {n} 个小时", file=sys.stderr)
 
 
 def from_db(db, table, stations, dates):

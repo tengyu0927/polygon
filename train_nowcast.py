@@ -599,7 +599,7 @@ XSTN = os.environ.get("PLOYGON_XSTN") == "1"
 # 2026-08-08 加郑州/济南时未给伙伴 —— 伙伴是按 2010 起夏季日最高温距平的
 # 同日相关实测选的，没跑过就不该编。XSTN 已否决、不在 FEATS 里，
 # 且下面用的是 .get(stn, ())，缺站不会报错。重开 XSTN 时要先补这两站的相关。
-XPARTNER = {                       # 站 -> 两个伙伴站（按上面的相关排序取前二）
+XPARTNER = {   # stations-ok: 伙伴站映射不是站点清单，缺站走 .get 默认值
     "ZBAA": ("ZSQD", "ZSPD"), "ZSPD": ("ZHHH", "ZUCK"),
     "ZGGG": ("ZGSZ", "ZSPD"), "ZGSZ": ("ZGGG", "ZSPD"),
     "ZUUU": ("ZUCK", "ZHHH"), "ZUCK": ("ZUUU", "ZHHH"),

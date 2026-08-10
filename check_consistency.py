@@ -406,6 +406,63 @@ def check_contracts(args):
     rep("deb_weights" in src["predict_mos.py"] and "deb_weights" in src["merge_mos.py"],
       "DEB 训练端与预测端共用同一实现")
 
+    # 站点清单只能有一个真相源 = stations.py。别处再抄一份，加站时必漏。
+    # 已经犯过三次: wu_obs.to_rows 硬写 STATION="ZGSZ"（把济南观测灌进深圳
+    # 25344 行）、predict_nowcast 硬写 WU_STATIONS={"ZGSZ"}（济南 12 时起
+    # 「无今日观测」）、stn_id 训练端设了预测端没设。判据是**语法级**的:
+    # 任何 .py 里出现「字面量 ICAO 集合/列表」的赋值，就是又抄了一份。
+    # 两条判据，缺一不可:
+    #   (a) 名字撞车: 赋值给 stations.py 也导出的同名变量，右边是字面量。
+    #       —— 2026-08-10 两次都是这条: predict_nowcast 和 live_tmax 各抄了
+    #       一份 WU_STATIONS = {"ZGSZ"}。**只含 1 个站，光看规模抓不到。**
+    #   (b) 规模: 字面量里出现 3 个以上 ICAO，不管叫什么名字。
+    # 确有正当理由的（如 XPARTNER 伙伴站映射），在赋值那行末尾写
+    # `# stations-ok: 理由` 豁免 —— 例外必须写出来，不能靠调松阈值放过。
+    import ast as _ast, glob as _glob
+    import stations as _ST
+    icao = set(_ST.ICAOS)
+    exported = {n for n in vars(_ST) if not n.startswith("_") and n.isupper()}
+    dup = []
+    for f in _glob.glob("*.py"):
+        if f in ("stations.py", "check_consistency.py"):
+            continue
+        try:
+            text = open(f, encoding="utf-8").read()
+            tree = _ast.parse(text)
+        except SyntaxError:
+            continue
+        lines = text.splitlines()
+        for node in _ast.walk(tree):
+            if not isinstance(node, _ast.Assign):
+                continue
+            v = node.value
+            tgt0 = node.targets[0]
+            nm0 = tgt0.id if isinstance(tgt0, _ast.Name) else None
+            if (nm0 in exported
+                    and isinstance(v, (_ast.Set, _ast.List, _ast.Tuple,
+                                       _ast.Dict, _ast.Constant))
+                    and "stations-ok:" not in lines[node.lineno - 1]):
+                dup.append(f"{f}:{node.lineno} {nm0} 抄了 stations.{nm0}")
+                continue
+            if isinstance(v, (_ast.Set, _ast.List, _ast.Tuple)):
+                lits = {e.value for e in v.elts
+                        if isinstance(e, _ast.Constant) and isinstance(e.value, str)}
+            elif isinstance(v, _ast.Dict):
+                lits = {k.value for k in v.keys
+                        if isinstance(k, _ast.Constant) and isinstance(k.value, str)}
+            else:
+                continue
+            hit = lits & icao
+            # 一两个站是特例（如 LEGACY 单站修正），三个以上就是在抄清单
+            if len(hit) >= 3:
+                if "stations-ok:" in lines[node.lineno - 1]:
+                    continue
+                tgt = node.targets[0]
+                nm = tgt.id if isinstance(tgt, _ast.Name) else "?"
+                dup.append(f"{f}:{node.lineno} {nm}={sorted(hit)[:3]}...")
+    rep(not dup, "站点清单只在 stations.py 里写死（别处不得再抄）",
+      "" if not dup else " | ".join(dup))
+
 
 def main() -> int:
     ap = argparse.ArgumentParser()
