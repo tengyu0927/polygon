@@ -121,13 +121,13 @@ def fetch(stations, timeout=20, retries=3, hours=None):
         for sid in out:
             out[sid].sort(key=lambda x: x.get("obsTime") or 0)
 
-    # 深圳必须换成 WU 的序列 —— 见下方 WU_STATIONS 说明
+    # 这几个站必须换成 WU 的序列 —— 见下方 WU_STATIONS 说明
     for sid in WU_STATIONS & set(stations):
         try:
             wu = fetch_wu(sid, hours or 1)
         except Exception as e:                       # noqa: BLE001
-            sys.stderr.write("  ! %s 取 WU 失败(%s)，这一行仍是宝安 METAR，"
-                             "与 WU 页面会对不上\n" % (sid, e))
+            sys.stderr.write("  ! %s 取 WU 失败(%s)，这一行仍是 AWC METAR，"
+                             "与 WU 页面会对不上（ZSJN 则是直接没数据）\n" % (sid, e))
             continue
         if not wu:
             continue
@@ -140,7 +140,10 @@ def fetch(stations, timeout=20, retries=3, hours=None):
 # 离深圳宝安 30km。最终对错以 WU 为准，模型也训练在这条序列上（见 wu_obs.py），
 # 所以这个监看窗口必须跟着换，否则你盯的当日最高温和打分用的不是一回事 ——
 # 实测 624 天里 70% 的日子对不上，26% 差 >=2℃。
-WU_STATIONS = {"ZGSZ"}
+# ZSJN 是另一个原因: AWC/IEM 根本没有它的逐时观测，不走 WU 就整站没数据。
+# 跟着 stations.py 走 —— 之前这里抄了一份只有 ZGSZ 的，加济南时漏改，
+# 结果 ZSJN 一直显示「无数据」，也就一直进不了推送。
+WU_STATIONS = _S.WU_STATIONS
 
 
 def fetch_wu(sid, hours):
