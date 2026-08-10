@@ -370,7 +370,7 @@ def main() -> int:
     _hdr_eh = f"{'预期命中':>7}" if os.path.exists(
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "hit_table.json")) else ""
     print(f"\n  {'站点':<14}{'预报':>7}{p90_col}{'已达':>7}{'预计再升':>10}"
-          f"{_hdr_eh}{'把握':>6}   备注")
+          f"{_hdr_eh}{'把握':>6}{'实况':>9}   备注")
 
     # 迟滞用的上一轮报出去的整数。报的是整数，连续值在 x.5 附近抖 0.02 度就会
     # 让整数翻个个儿 —— 15 个月回测里 61% 的逐小时改动是这种空转（动出去又回来）。
@@ -435,16 +435,33 @@ def main() -> int:
     names, med = spec["names"], spec["median"]
     warned_p90 = False
     rows_out = []
+    # 每个站用的是哪个实况源、最新一条是几点。**只是标识，不改任何预报值。**
+    # 起因: 滞后 1-2 小时的实况会让模型抓不住当下的升温趋势，而 morning() 的
+    # 硬防护只挡 >2 小时（train_nowcast.py 的 `max(o) < cutoff - 2`），
+    # 1-2 小时这一档是放行的，且日志里从来没记过观测时刻，事后查不了。
+    def _obs_tag(stn, hrs):
+        s = "WU" if stn in WU_STATIONS else ("AWC" if args.live else "库")
+        hh = [h for h in (hrs or {}) if h <= cutoff]
+        if not hh:
+            return s, None, f"{s + ' --':>9}"
+        last = max(hh)
+        lag = cutoff - last
+        return s, lag, f"{s + ' ' + str(last) + '时' + ('!' if lag >= 1 else ''):>9}"
+    stale = []
     for stn in stations:
         hrs = days.get((stn, tgt.isoformat()))
+        _s, _lag, _otag = _obs_tag(stn, hrs)
+        if _lag is not None and _lag >= 1:
+            stale.append((stn, _s, cutoff - _lag, _lag))
         if not hrs:
-            print(f"  {stn} {N.NAMES.get(stn,''):<9}{'--':>7}{'--':>7}{'--':>10}   无今日观测")
+            print(f"  {stn} {N.NAMES.get(stn,''):<9}{'--':>7}{'--':>7}{'--':>10}"
+                  f"{_otag}   无今日观测")
             continue
         o = N.morning(hrs, cutoff)
         if o is None:
             n = len([h for h in hrs if h <= cutoff])
-            print(f"  {stn} {N.NAMES.get(stn,''):<9}{'--':>7}{'--':>7}{'--':>10}   "
-                  f"截止前仅 {n} 条观测，不足")
+            print(f"  {stn} {N.NAMES.get(stn,''):<9}{'--':>7}{'--':>7}{'--':>10}"
+                  f"{_otag}   截止前仅 {n} 条观测，不足")
             continue
 
         ph = days.get((stn, prv.isoformat()))
@@ -563,8 +580,16 @@ def main() -> int:
         pc = (f"{round(p90):>8}" if p90 is not None
               else (f"{'--':>8}" if args.p90 else ""))
         print(f"  {stn} {N.NAMES.get(stn,''):<9}{shown:>7}{pc}{msf:>7.0f}"
-              f"{rise:>+10.1f}{ehs}{conf:>6}   {note}")
+              f"{rise:>+10.1f}{ehs}{conf:>6}{_otag}   {note}")
         rows_out.append((stn, shown, msf, rise))
+
+    if stale:
+        print(f"\n[warn] 实况滞后（截止 {cutoff} 时，标 ! 的站）:", file=sys.stderr)
+        for stn, s, last, lag in sorted(stale, key=lambda x: -x[3]):
+            print(f"       {stn} {N.NAMES.get(stn,'')} 最新 {last} 时（{s}），"
+                  f"滞后 {lag} 小时", file=sys.stderr)
+        print(f"       滞后 >2 小时的站会被 morning() 挡掉出 --，1-2 小时照报，"
+              f"抓不住当下升温趋势", file=sys.stderr)
 
     if args.compare and os.path.exists(args.compare):
         print(f"\n（另见 {args.compare} 的 D+1 结果，可并排比较）")
