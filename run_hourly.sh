@@ -4,6 +4,7 @@
 #   ./run_hourly.sh          # 用当前小时
 #   ./run_hourly.sh 11       # 指定小时（补跑）
 #   ./run_hourly.sh 11 --no-fetch    # 跳过取数，只重跑模型
+#   ./run_hourly.sh --stations ZGSZ,ZSJN --no-side   # 只跑这两站（分批用）
 #
 # 9-13 时用六模式模型（要联网取 6 份 GFS/ECMWF/... 预报，约 1 分钟）
 # 14/15 时用纯实况模型（不联网，快）—— 那时大部分站已见顶，模式信息没有增量。
@@ -49,7 +50,24 @@ HOUR=${1:-$(TZ=Asia/Shanghai date +%-H)}
 [[ "${1:-}" == --* ]] && HOUR=$(TZ=Asia/Shanghai date +%-H)
 NOFETCH=""
 USE_LIVE=""
-for a in "$@"; do [[ "$a" == "--no-fetch" ]] && NOFETCH=1; done
+# 分批跑。WU 那两个站（深圳/济南）的整点观测比 METAR 晚落地，让它们单独
+# 晚一档跑，其余 8 站不用陪着等。清单一律从 stations.py 取，别在这写死。
+#   :15  ./run_hourly.sh --stations "$(non_wu)"
+#   :30  ./run_hourly.sh --stations "$(wu)" --no-side
+# --no-side: 跳过 run0_probe / ens_collect 这两个与站点无关的旁路任务，
+#            它们一小时只该跑一次，否则 run0_probe 的逐档记录会重复。
+ONLY=""
+NOSIDE=""
+_prev=""
+for a in "$@"; do
+    [[ "$a" == "--no-fetch" ]] && NOFETCH=1
+    [[ "$a" == "--no-side" ]] && NOSIDE=1
+    [[ "$_prev" == "--stations" ]] && ONLY="$a"
+    _prev="$a"
+done
+if [[ -n "$ONLY" ]]; then
+    STATIONS="$ONLY"
+fi
 
 TODAY=$(TZ=Asia/Shanghai date +%Y-%m-%d)
 LOG=${PLOYGON_LOG:-pred_${TODAY}.log}   # 一致性检查会覆盖它，避免污染真实日志
@@ -98,7 +116,9 @@ if [[ -z "$NOFETCH" ]]; then
     # 前瞻记录「这个时刻实际能取到的最新一轮模式」。不参与预报，
     # 只为判定 previous_day0 能不能拿来训练（见 run0_probe.py 的说明）。
     # 失败不影响本轮预报。
-    python3 run0_probe.py --db run0_probe.sqlite --cutoff "$HOUR" --log >/dev/null 2>&1 || true
+    if [[ -z "$NOSIDE" ]]; then
+        python3 run0_probe.py --db run0_probe.sqlite --cutoff "$HOUR" --log >/dev/null 2>&1 || true
+    fi
 
     # 这里**不**再重建 mos_*.csv。predict_nowcast.py 的模式特征是自己联网取的
     # （fetch_nwp / fetch_m2），压根不读 csv —— 每小时重建一遍纯属浪费:
@@ -110,14 +130,17 @@ fi
     echo
     echo "########## $(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S')  ${HOUR} 时起报  模型 $MODEL ##########"
     python3 predict_nowcast.py --model "$MODEL" --cutoff "$HOUR" \
-        --hurdle --p90 --verbose $USE_LIVE ${EXTRA[@]+"${EXTRA[@]}"}
+        --hurdle --p90 --verbose $USE_LIVE ${EXTRA[@]+"${EXTRA[@]}"} \
+        ${ONLY:+--stations "$ONLY"}
 } 2>&1 | tee -a "$LOG"
 
 # 集合预报采集。**只攒数据，不进任何模型** —— Open-Meteo 的集合 API 拿不到
 # 历史（见 ens_collect.py 顶部），时效也只能靠记下抓取时刻自己保证，
 # 所以要用就得从今天开始自己攒，约 3 个月（~720 站日）才够做 A/B。
 # 一次请求带 8 个站，4 个模式共 4 次请求，几秒钟。失败绝不能影响预报。
-python3 ens_collect.py --db "${PLOYGON_ENS_DB:-ens.sqlite}" --days 2 \
-    2>&1 | tail -1 >&2 || echo "  [warn] 集合采集失败（不影响预报）" >&2
+if [[ -z "$NOSIDE" ]]; then
+    python3 ens_collect.py --db "${PLOYGON_ENS_DB:-ens.sqlite}" --days 2 \
+        2>&1 | tail -1 >&2 || echo "  [warn] 集合采集失败（不影响预报）" >&2
+fi
 
 echo "已追加到 $LOG" >&2

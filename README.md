@@ -434,6 +434,33 @@ python3 backtest_nowcast.py --db cn.sqlite --nwp-csv mos.csv \
 
 结果同时打屏并追加到 `pred_YYYY-MM-DD.log`，一天下来就是完整的逐档演变记录。
 
+#### 分批跑: 深圳/济南晚一档（2026-08-10 加机制，落地时刻待测）
+
+WU 的整点观测比 METAR 晚落地，而生产每小时 :15 跑 —— 深圳/济南可能每轮都
+拿的是上一小时的实况。**解法不是切数据源**（没有可切的，见下一节），
+而是让这两站单独晚跑，其余 8 站不用陪着等:
+
+```bash
+./run_hourly.sh --stations ZBAA,ZGGG,ZHCC,ZHHH,ZSPD,ZSQD,ZUCK,ZUUU   # :15
+./run_hourly.sh --stations ZGSZ,ZSJN --no-side                        # :30
+```
+
+`--no-side` 跳过 `run0_probe` / `ens_collect` 这两个与站点无关的旁路任务
+（一小时只该跑一次，否则 run0_probe 的逐档记录会重复）。
+不带 `--stations` 仍跑全部 10 站 —— `check_consistency` 的实跑段依赖这个。
+
+**迟滞状态分批安全**: `nowcast_state.json` 是「先读全量再逐站更新」，
+第二批不会覆盖第一批。实跑验证过: 批 A 跑完 8 站、批 B 跑完 2 站之后，
+`last` 里是完整的 10 站。
+
+**:30 这个时刻是暂定的，还没测准。** 两条取证路径:
+- 直接探针轮询 WU，记录整点观测几分落地（注意第一次轮询会把当天所有整点
+  都当成「首次看到」，那是回填不是落地，只有开跑之后新出现的整点才算数）
+- 新加的「实况」列每轮自动记录，攒几天看深圳/济南是不是每轮都带 `!`
+
+已知的一点: 2026-08-10 21:43 轮询时两站都已有 21:00，即落地在整点后
+43 分钟内 —— **这个精度区分不了 :15 和 :30**，所以还不能定。
+
 #### 「实况」列: 每个站用的哪个源、最新一条几点（2026-08-10 加）
 
 输出多一列 `实况`，形如 `库 11时` / `WU 9时!`，`!` = 滞后 >=1 小时；
@@ -654,7 +681,8 @@ cron 的 `/usr/bin/python3` 就没有 sklearn，所以 crontab 里必须钉住 P
 
 ```cron
 PATH=/opt/homebrew/bin:/usr/bin:/bin
-15 9-15 * * * cd ~/projects/ploygon && ./run_hourly.sh >> cron_hourly.log 2>&1
+15 9-15 * * * cd ~/projects/ploygon && ./run_hourly.sh --stations ZBAA,ZGGG,ZHCC,ZHHH,ZSPD,ZSQD,ZUCK,ZUUU >> cron_hourly.log 2>&1
+30 9-15 * * * cd ~/projects/ploygon && ./run_hourly.sh --stations ZGSZ,ZSJN --no-side >> cron_hourly.log 2>&1
 59 23 * * * cd ~/projects/ploygon && ./run_daily.sh >> cron_daily.log 2>&1
 ```
 

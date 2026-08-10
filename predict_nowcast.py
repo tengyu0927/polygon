@@ -263,6 +263,8 @@ def from_awc(stations, hours=30, retries=3):
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="nowcast.json")
+    ap.add_argument("--stations", default="",
+                    help="只跑这些站（逗号分隔）。默认跑模型里的全部站")
     ap.add_argument("--db", default="cn.sqlite")
     ap.add_argument("--table", default="obs")
     ap.add_argument("--cutoff", type=int, default=0)
@@ -307,6 +309,17 @@ def main() -> int:
            else now.date())
     prv = tgt - timedelta(days=1)
     stations = sorted({k.split("|")[0] for k in spec["clim_rise"]})
+    # 分批跑: WU 那两个站的整点观测比 METAR 晚落地，让它们单独晚一档跑，
+    # 其余 8 站不用陪着等。迟滞状态是「先读全量再逐站更新」，分批不会互相
+    # 覆盖（见下方 _state 的加载）。
+    if args.stations:
+        want = {x.strip().upper() for x in args.stations.split(",") if x.strip()}
+        bad = want - set(stations)
+        if bad:
+            print(f"[error] --stations 里有模型不认识的站: {sorted(bad)}",
+                  file=sys.stderr)
+            return 1
+        stations = [s for s in stations if s in want]
 
     nwp = {}
     if spec.get("has_nwp"):
