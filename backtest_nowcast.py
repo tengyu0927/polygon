@@ -408,6 +408,8 @@ def main() -> int:
                     help="把滚动重训的 D+1 MOS 预报当特征加进来（组合两条路线）")
     ap.add_argument("--no-hurdle", action="store_true")
     ap.add_argument("--daily", action="store_true", help="逐日逐站明细")
+    ap.add_argument("--mos-oos", default="",
+                    help="train_mos --pred 导出的样本外 D+1 预报 CSV")
     ap.add_argument("--csv-out", default="", help="把逐日结果写 CSV")
     ap.add_argument("--stations", default="",
                     help="逗号分隔，只用这些站训练+评估。加站时做「加站前 vs 加站后」"
@@ -434,6 +436,18 @@ def main() -> int:
                 nwp_map[(r["station"], r["date"])] = {
                     c: float(r[c]) for c in want if r.get(c) not in (None, "")}
         print(f"  NWP 覆盖 {len(nwp_map)} 站日", file=sys.stderr)
+
+    # D+1 链路的订正后输出（train_mos --pred 导出的**样本外**测试期预报）。
+    # 只在 --mos-oos 给了文件时挂上；缺的站日 __mosd 为 None，走缺测路径。
+    if args.mos_oos and os.path.exists(args.mos_oos):
+        n_mo = 0
+        for r in csv.DictReader(open(args.mos_oos, encoding="utf-8")):
+            if r.get("lead") != "1" or not r.get("pred"):
+                continue
+            k = (r["station"], r["date"])
+            if k in nwp_map:
+                nwp_map[k]["__mosd"] = float(r["pred"]); n_mo += 1
+        print(f"  MOS 订正输出覆盖 {n_mo} 站日", file=sys.stderr)
 
     names = list(N.FEATS) if args.nwp_csv else \
         [n for n in N.FEATS if not N.is_nwp_feat(n)]

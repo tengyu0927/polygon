@@ -248,8 +248,12 @@ def check_mos(args):
     #   pk_p_late 见顶时刻辅助模型的输出，未通过 A/B
     #   x1_/x2_   跨站: 训练端能算、**预测端逐站循环产不出来**，
     #             2026-08-06 被 [1] 的逐列比对当场抓到，故仍禁止
+    #   mosd_*    D+1 链路的订正后输出。2026-08-12 否决 —— 首轮用单次切分的
+    #             MOS 序列测出 9/10 时 P=99.4%/99.9%，换成与生产同口径的逐月
+    #             滚动序列后，10 时（原本最强）直接归零（+0.0027, P=30%），
+    #             11 时显著更差。详见 README。
     rejected = ({"oracle_peak_h", "oracle_hours_to_peak", "pk_p_late"}
-                | set(TN.xstn_feature_names()))
+                | set(TN.xstn_feature_names()) | set(TN.MOSF_FEATS))
     for path, tag in ((args.nowcast_model, "临近预报模型"),
                       (args.nowcast_late_model, "临近预报晚时次模型")):
         if not os.path.exists(path):

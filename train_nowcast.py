@@ -138,6 +138,23 @@ if os.environ.get("PLOYGON_WINDAM") == "1":
 
 # 天气型异常一族（A/B 测试中，PLOYGON_REGIME=1 打开）。见 build_feats 里的说明。
 # 列一律计算，只有进不进 FEATS 受 flag 控制（2026-08-06 的教训）。
+# D+1 那条链路（train_mos）的**订正后**输出当特征。临近侧现在只吃原始模式值
+# （nwp_*、m2~m7 共 81/120 项），没有 DEB 偏差订正、没有 ridge+GBM blend 的
+# 结果 —— 那条链路对同一批模式数据做了不同处理，可能有互补信息。
+# **必须用无泄漏的样本外序列**（train_mos --pred 导出的测试期预报），
+# 拿部署中模型现成的历史预测会把未来信息灌进训练集。
+# PLOYGON_MOSFEAT: 1=全部三项  lvl=只要水平值  corr=只要订正量
+# 分开测是为了判断口径风险: 订正量（corr）比绝对水平（lvl）稳定得多，
+# 若信号主要在 corr 上，训练/生产用不同版本 MOS 的风险就小很多。
+MOSF_FEATS = ["mosd_pred", "mosd_minus_sofar", "mosd_minus_nwp"]
+_mf = os.environ.get("PLOYGON_MOSFEAT", "")
+if _mf == "1":
+    FEATS += MOSF_FEATS
+elif _mf == "lvl":
+    FEATS += ["mosd_pred", "mosd_minus_sofar"]
+elif _mf == "corr":
+    FEATS += ["mosd_minus_nwp"]
+
 REGIME_FEATS = ["sofar_minus_now", "sofar_hour", "sofar_is_night",
                 "ts_hours_am", "ra_hours_am", "wet_frac_am"]
 if os.environ.get("PLOYGON_REGIME") == "1":
@@ -492,6 +509,11 @@ def build_feats(o, cutoff, prev, clim_r, clim_p, doy, nwp):
     f["nwp_minus_sofar"] = None if f["nwp_tmax"] is None else f["nwp_tmax"] - msf
     tp, dp = g.get("temperature_2m_peakmean"), g.get("dew_point_2m_peakmean")
     f["nwp_dpd_peak"] = None if (tp is None or dp is None) else tp - dp
+    mp = g.get("__mosd")
+    f["mosd_pred"] = mp
+    f["mosd_minus_sofar"] = None if mp is None else mp - msf
+    f["mosd_minus_nwp"] = (None if (mp is None or f["nwp_tmax"] is None)
+                           else mp - f["nwp_tmax"])
     return f, msf
 
 
