@@ -29,6 +29,9 @@ import os
 import re
 import sqlite3
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) or ".")
+import stations as _S                     # noqa: E402  站点清单唯一真相源
 from datetime import datetime, timedelta, timezone
 
 CST = timezone(timedelta(hours=8))
@@ -234,16 +237,21 @@ def _slot_report(args):
         G[(d, slot)].append(abs(val(s, p, q) - o))
     days = sorted({d for d, _ in G})
     print(f"\n── 按起报时刻（规则: {'/'.join(sorted(LATE_PEAK))} 看不排除，其余看预报）")
-    print(f"  {'起报':<7}{'天数':>5}{'平均命中站数':>13}{'8站全对':>10}{'8站全±1℃':>11}{'MAE':>8}")
+    # 站数取自 stations.py，别写死。2026-08-11 踩过: 这里写死 8，扩到 10 站后
+    # 「只有 8 个站出数」的时次（那天深圳/济南被锁 bug 吃掉五档）也被算进
+    # 「全对」，分母还在变，两种口径混在一列里。要求满编才进这几个统计。
+    _N = len(_S.ICAOS)
+    print(f"  {'起报':<7}{'天数':>5}{'平均命中站数':>13}"
+          f"{f'{_N}站全对':>10}{f'{_N}站全±1℃':>11}{'MAE':>8}")
     for slot in range(9, 16):
-        ds = [d for d in days if len(G.get((d, slot), [])) >= 8]
+        ds = [d for d in days if len(G.get((d, slot), [])) >= _N]
         if not ds:
             continue
         avg = sum(sum(1 for x in G[(d, slot)] if x == 0) for d in ds) / len(ds)
         allhit = sum(1 for d in ds if all(x == 0 for x in G[(d, slot)]))
         allw1 = sum(1 for d in ds if all(x <= 1 for x in G[(d, slot)]))
         mae = sum(x for d in ds for x in G[(d, slot)]) / sum(len(G[(d, slot)]) for d in ds)
-        print(f"  {slot} 时{'':<3}{len(ds):>5}{avg:>11.1f}/8{allhit:>7}/{len(ds):<3}"
+        print(f"  {slot} 时{'':<3}{len(ds):>5}{avg:>11.1f}/{_N}{allhit:>7}/{len(ds):<3}"
               f"{allw1:>8}/{len(ds):<3}{mae:>8.3f}")
 
     # 待验观察: 晚见顶站在 15 时可能该改看「预报」（那时多半已见顶，

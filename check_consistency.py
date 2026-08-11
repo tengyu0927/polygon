@@ -320,9 +320,12 @@ def check_scripts(args):
             if os.environ.get(k) and k not in CRON_VARS and k.lower() not in CRON_VARS]
     rep(not miss, "crontab 的代理设置与当前 shell 一致",
         "" if not miss else f"crontab 缺 {miss}，生产会裸连 —— 加到 crontab 的 PATH 行下面")
-    for lock in ("/tmp/ploygon_run_hourly.lock", "/tmp/ploygon_run_daily.lock"):
+    # 锁按批次分名（run_hourly.sh 里 LOCK 带 --stations 的取值），所以要通配
+    import glob as _g
+    import shutil
+    for lock in (_g.glob("/tmp/ploygon_run_hourly*.lock")
+                 + ["/tmp/ploygon_run_daily.lock"]):
         if os.path.isdir(lock):
-            import shutil
             shutil.rmtree(lock, ignore_errors=True)
 
     r = subprocess.run(["./run_hourly.sh", str(args.cutoff)],
@@ -333,7 +336,10 @@ def check_scripts(args):
     # 半夜跑这项会数出 0 个站，等于把误报从 9 换成了 0。
     rows = [l for l in r.stdout.splitlines()
             if re.match(r"^  Z[A-Z]{3}\s+\S+\s+(-?\d|--)", l)]
-    rep(r.returncode == 0 and len(rows) == 8,
+    # 站数取自 stations.py。2026-08-11 踩过: 这里写死 8，扩到 10 站时漏改，
+    # 于是实跑明明通过（退出码 0、10 个站、其余五项全绿）却报 ✗。
+    import stations as _ST2
+    rep(r.returncode == 0 and len(rows) == len(_ST2.ICAOS),
         "run_hourly.sh 在 cron 环境下完整跑通",
         f"退出码 {r.returncode}，输出 {len(rows)} 个站"
         + (f"｜{r.stderr.strip().splitlines()[-1][:80]}" if r.returncode else ""))
