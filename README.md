@@ -442,12 +442,24 @@ WU 的整点观测比 METAR 晚落地，而生产每小时 :15 跑 —— 深圳
 
 ```bash
 ./run_hourly.sh --stations ZBAA,ZGGG,ZHCC,ZHHH,ZSPD,ZSQD,ZUCK,ZUUU   # :15
-./run_hourly.sh --stations ZGSZ,ZSJN --no-side                        # :30
+./run_hourly.sh --stations ZGSZ,ZSJN --no-side                        # :35
 ```
 
 `--no-side` 跳过 `run0_probe` / `ens_collect` 这两个与站点无关的旁路任务
 （一小时只该跑一次，否则 run0_probe 的逐档记录会重复）。
 不带 `--stations` 仍跑全部 10 站 —— `check_consistency` 的实跑段依赖这个。
+
+**锁必须按批次分**（2026-08-11 踩过）。原来两批共用 `/tmp/ploygon_run_hourly.lock`，
+而 `:15` 那批只要慢一次，`:35` 那批就整个被跳过。当天实际发生: `:15` 批连续
+5 小时占锁超过 20 分钟（外部服务间歇性慢，非代码必然 —— 事后实测整轮只要
+116 秒、第七成员 87 秒、两个旁路任务 2+8 秒），**深圳/济南七档只拿到 9 时和
+15 时两档**，`cron_hourly.log` 里 5 条 `[skip]` 就是这么来的。15 时能幸免是
+因为那一档用 `nowcast_late.json`、不取任何模式，跑得快。
+
+锁的本意是「同一批次的上一轮没退完，本轮别叠上去」，两批站点不重叠，本就
+不该互斥。锁名改为按 `--stations` 取值区分（`/tmp/ploygon_run_hourly<批次>.lock`），
+参数解析随之挪到取锁之前。双向验证过: 批 A 持锁时批 B 照常开工；同批次重复
+开工仍 `[skip]`。
 
 **迟滞状态分批安全**: `nowcast_state.json` 是「先读全量再逐站更新」，
 第二批不会覆盖第一批。实跑验证过: 批 A 跑完 8 站、批 B 跑完 2 站之后，
@@ -682,7 +694,7 @@ cron 的 `/usr/bin/python3` 就没有 sklearn，所以 crontab 里必须钉住 P
 ```cron
 PATH=/opt/homebrew/bin:/usr/bin:/bin
 15 9-15 * * * cd ~/projects/ploygon && ./run_hourly.sh --stations ZBAA,ZGGG,ZHCC,ZHHH,ZSPD,ZSQD,ZUCK,ZUUU >> cron_hourly.log 2>&1
-30 9-15 * * * cd ~/projects/ploygon && ./run_hourly.sh --stations ZGSZ,ZSJN --no-side >> cron_hourly.log 2>&1
+35 9-15 * * * cd ~/projects/ploygon && ./run_hourly.sh --stations ZGSZ,ZSJN --no-side >> cron_hourly.log 2>&1
 59 23 * * * cd ~/projects/ploygon && ./run_daily.sh >> cron_daily.log 2>&1
 ```
 

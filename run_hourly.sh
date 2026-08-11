@@ -14,9 +14,33 @@ cd "$(dirname "$0")"
 
 export PATH="$PATH:/usr/sbin"
 
+# 参数解析必须在取锁之前 —— 锁名要按批次区分（见下）。
+# 分批跑: WU 那两个站（深圳/济南）的整点观测比 METAR 晚落地，让它们单独
+# 晚一档跑，其余 8 站不用陪着等。清单一律从 stations.py 取，别在这写死。
+#   :15  ./run_hourly.sh --stations "$(non_wu)"
+#   :35  ./run_hourly.sh --stations "$(wu)" --no-side
+# --no-side: 跳过 run0_probe / ens_collect 这两个与站点无关的旁路任务，
+#            它们一小时只该跑一次，否则 run0_probe 的逐档记录会重复。
+NOFETCH=""
+USE_LIVE=""
+ONLY=""
+NOSIDE=""
+_prev=""
+for a in "$@"; do
+    [[ "$a" == "--no-fetch" ]] && NOFETCH=1
+    [[ "$a" == "--no-side" ]] && NOSIDE=1
+    [[ "$_prev" == "--stations" ]] && ONLY="$a"
+    _prev="$a"
+done
+
 # 单实例锁。IEM 偶尔卡住，没有锁的话每小时叠一个僵尸进程、互相抢 cn.sqlite
 # 的写锁，越堆越死（实测 14:15 那轮挂了 21 分钟没退）。
-LOCK=/tmp/ploygon_run_hourly.lock
+# 锁按**批次**分。两批的站点不重叠，共用一把锁的话，:15 那批慢一次就会让
+# :35 那批整个被跳过 —— 2026-08-11 实际发生: :15 批连续 5 小时占锁超过 20
+# 分钟（外部服务间歇性慢），深圳/济南七档只拿到 9 时和 15 时两档，
+# cron_hourly.log 里 5 条 [skip] 就是这么来的。
+# 锁的本意是「同一批次的上一轮没退完，本轮别叠上去」，所以按批次区分才对。
+LOCK=/tmp/ploygon_run_hourly$(printf '%s' "${ONLY:-all}" | tr -c 'A-Za-z0-9' '_').lock
 if ! mkdir "$LOCK" 2>/dev/null; then
     OLD=$(cat "$LOCK/pid" 2>/dev/null || echo "")
     if [ -n "$OLD" ] && kill -0 "$OLD" 2>/dev/null; then
@@ -45,30 +69,11 @@ STATIONS=ZBAA,ZGGG,ZGSZ,ZHCC,ZHHH,ZSJN,ZSPD,ZSQD,ZUCK,ZUUU
 MODELS=ecmwf_ifs025,cma_grapes_global,icon_global,jma_gsm,gem_global,local_gfs
 # 追加模式的顺序必须与训练时 --nwp-csv2 的顺序一致，否则 m2_/m3_ 各列对错模式
 
+[[ -n "$ONLY" ]] && STATIONS="$ONLY"
+
 # 一律按北京时取小时。用系统本地时区的话，机器时区一变自动选档就错
 HOUR=${1:-$(TZ=Asia/Shanghai date +%-H)}
 [[ "${1:-}" == --* ]] && HOUR=$(TZ=Asia/Shanghai date +%-H)
-NOFETCH=""
-USE_LIVE=""
-# 分批跑。WU 那两个站（深圳/济南）的整点观测比 METAR 晚落地，让它们单独
-# 晚一档跑，其余 8 站不用陪着等。清单一律从 stations.py 取，别在这写死。
-#   :15  ./run_hourly.sh --stations "$(non_wu)"
-#   :30  ./run_hourly.sh --stations "$(wu)" --no-side
-# --no-side: 跳过 run0_probe / ens_collect 这两个与站点无关的旁路任务，
-#            它们一小时只该跑一次，否则 run0_probe 的逐档记录会重复。
-ONLY=""
-NOSIDE=""
-_prev=""
-for a in "$@"; do
-    [[ "$a" == "--no-fetch" ]] && NOFETCH=1
-    [[ "$a" == "--no-side" ]] && NOSIDE=1
-    [[ "$_prev" == "--stations" ]] && ONLY="$a"
-    _prev="$a"
-done
-if [[ -n "$ONLY" ]]; then
-    STATIONS="$ONLY"
-fi
-
 TODAY=$(TZ=Asia/Shanghai date +%Y-%m-%d)
 LOG=${PLOYGON_LOG:-pred_${TODAY}.log}   # 一致性检查会覆盖它，避免污染真实日志
 
