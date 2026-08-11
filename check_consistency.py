@@ -269,12 +269,40 @@ def check_mos(args):
 # 于是「00:13 的 cron 结果」和「01:35 的检查实跑」在库里混成一份，
 # 武汉 08-03 在 verify.sqlite 里是 38、在 pred_mos.csv 里是 37。
 # 检验库是判断规则对错的唯一依据，绝不能掺进检查跑出来的行。
-CRON_ENV = {"PATH": "/opt/homebrew/bin:/usr/bin:/bin",
+# **这里的环境必须与真实 crontab 一致**，否则这一项测的不是生产在跑的东西。
+# 2026-08-11 踩过: crontab 里只有 PATH，没有 HTTP_PROXY/HTTPS_PROXY，而
+# gfs_live 拉 NOAA S3 的字节范围下载在无代理下从 90 秒变成 >500 秒 ——
+# 整轮从约 2 分钟拖到 20 分钟以上，:35 那批因锁被跳过五次，这一项也连着
+# 几天超时。下面的 _cron_vars() 会把真实 crontab 的变量读进来，并在与当前
+# shell 有出入时报出来。
+def _cron_vars():
+    """读真实 crontab 里的 VAR=VALUE 赋值行。取不到就返回空。"""
+    try:
+        out = subprocess.run(["crontab", "-l"], capture_output=True,
+                             text=True, timeout=10).stdout
+    except Exception:                                 # noqa: BLE001
+        return {}
+    v = {}
+    for line in out.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, val = line.partition("=")
+        if k.strip().isidentifier():
+            v[k.strip()] = val.strip()
+    return v
+
+
+CRON_VARS = _cron_vars()
+CRON_ENV = {"PATH": CRON_VARS.get("PATH", "/opt/homebrew/bin:/usr/bin:/bin"),
             "HOME": os.environ.get("HOME", ""),
             "PLOYGON_LOG": "/tmp/_check_run.log",
             "PLOYGON_TAF_DB": "/tmp/_check_taf.sqlite",
             "PLOYGON_VERIFY_DB": "/tmp/_check_verify.sqlite",
             "PLOYGON_STATE": "/tmp/_check_state.json"}
+for _k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY"):
+    if _k in CRON_VARS:
+        CRON_ENV[_k] = CRON_VARS[_k]
 
 
 def check_scripts(args):
@@ -286,6 +314,12 @@ def check_scripts(args):
     交互式 shell 的 PATH / 环境变量与 cron 完全不同，必须用 env -i 复现。
     """
     print("\n[4] 入口脚本（模拟 cron 环境实跑）")
+    # 先查环境漂移: 当前 shell 有代理而 crontab 没有 -> 生产每轮都在裸连
+    # NOAA S3，整轮会从约 2 分钟拖到 20 分钟以上（2026-08-11 实测 90s vs >500s）
+    miss = [k for k in ("HTTP_PROXY", "HTTPS_PROXY")
+            if os.environ.get(k) and k not in CRON_VARS and k.lower() not in CRON_VARS]
+    rep(not miss, "crontab 的代理设置与当前 shell 一致",
+        "" if not miss else f"crontab 缺 {miss}，生产会裸连 —— 加到 crontab 的 PATH 行下面")
     for lock in ("/tmp/ploygon_run_hourly.lock", "/tmp/ploygon_run_daily.lock"):
         if os.path.isdir(lock):
             import shutil
