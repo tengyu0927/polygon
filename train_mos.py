@@ -308,14 +308,19 @@ def paired_boot(e_a, e_b, dates, n_boot=2000, seed=0):
 
 # ============================================================ 主流程
 
-def run_lead(rows, lead, args):
+def run_lead(rows, lead, args, cuts=None):
+    """cuts=(c1, c2) 可覆盖默认的 70/85 时间切分。给 mos_rolling.py 用 ——
+    它要按月滚动重训，每次的测试期就是下一个月。不传时行为与原来完全一致。"""
     sub = [r for r in rows if r["lead"] == lead]
     if len(sub) < 200:
         print(f"D+{lead} 样本不足 ({len(sub)})，跳过")
         return None
 
     dates = sorted({r["date"] for r in sub})
-    c1, c2 = dates[int(len(dates) * .70)], dates[int(len(dates) * .85)]
+    if cuts:
+        c1, c2 = cuts
+    else:
+        c1, c2 = dates[int(len(dates) * .70)], dates[int(len(dates) * .85)]
     tr = [r for r in sub if r["date"] < c1]
     va = [r for r in sub if c1 <= r["date"] < c2]
     te = [r for r in sub if r["date"] >= c2]
