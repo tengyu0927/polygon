@@ -146,6 +146,17 @@ if os.environ.get("PLOYGON_WINDAM") == "1":
 # PLOYGON_MOSFEAT: 1=全部三项  lvl=只要水平值  corr=只要订正量
 # 分开测是为了判断口径风险: 订正量（corr）比绝对水平（lvl）稳定得多，
 # 若信号主要在 corr 上，训练/生产用不同版本 MOS 的风险就小很多。
+# 早晨探空（00Z = 北京时 08 时）的派生量。**唯一的一手实测新信息源** ——
+# 现有 120 项特征里 81 项是原始模式值，一条实测廓线都没有。
+# 训练端读 IGRA 归档、预测端读怀俄明实时，但派生量一律由 sonde.feats()
+# 这一个函数算（见 sonde.py 顶部）。双源比对: 核心项 0/30 完全一致，
+# 总不一致率 2.2%（集中在深圳，香港站是全分辨率、浅逆温落在网格点之间）。
+SONDE_FEATS = ["sd_th925", "sd_th850", "sd_th_inv", "sd_inv_dt", "sd_inv_dp",
+               "sd_lapse_p", "sd_dpd_low", "sd_t850", "sd_t700",
+               "sd_th850_minus_sofar"]
+if os.environ.get("PLOYGON_SONDE") == "1":
+    FEATS += SONDE_FEATS
+
 MOSF_FEATS = ["mosd_pred", "mosd_minus_sofar", "mosd_minus_nwp"]
 _mf = os.environ.get("PLOYGON_MOSFEAT", "")
 if _mf == "1":
@@ -509,6 +520,11 @@ def build_feats(o, cutoff, prev, clim_r, clim_p, doy, nwp):
     f["nwp_minus_sofar"] = None if f["nwp_tmax"] is None else f["nwp_tmax"] - msf
     tp, dp = g.get("temperature_2m_peakmean"), g.get("dew_point_2m_peakmean")
     f["nwp_dpd_peak"] = None if (tp is None or dp is None) else tp - dp
+    for k in ("sd_th925", "sd_th850", "sd_th_inv", "sd_inv_dt", "sd_inv_dp",
+              "sd_lapse_p", "sd_dpd_low", "sd_t850", "sd_t700"):
+        f[k] = g.get("__" + k)
+    f["sd_th850_minus_sofar"] = (None if f["sd_th850"] is None
+                                 else f["sd_th850"] - msf)
     mp = g.get("__mosd")
     f["mosd_pred"] = mp
     f["mosd_minus_sofar"] = None if mp is None else mp - msf

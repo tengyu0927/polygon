@@ -253,7 +253,8 @@ def check_mos(args):
     #             滚动序列后，10 时（原本最强）直接归零（+0.0027, P=30%），
     #             11 时显著更差。详见 README。
     rejected = ({"oracle_peak_h", "oracle_hours_to_peak", "pk_p_late"}
-                | set(TN.xstn_feature_names()) | set(TN.MOSF_FEATS))
+                | set(TN.xstn_feature_names()) | set(TN.MOSF_FEATS)
+                | set(TN.SONDE_FEATS))
     for path, tag in ((args.nowcast_model, "临近预报模型"),
                       (args.nowcast_late_model, "临近预报晚时次模型")):
         if not os.path.exists(path):

@@ -408,6 +408,7 @@ def main() -> int:
                     help="把滚动重训的 D+1 MOS 预报当特征加进来（组合两条路线）")
     ap.add_argument("--no-hurdle", action="store_true")
     ap.add_argument("--daily", action="store_true", help="逐日逐站明细")
+    ap.add_argument("--sonde", default="", help="sonde.py --build 出的探空特征表")
     ap.add_argument("--mos-oos", default="",
                     help="train_mos --pred 导出的样本外 D+1 预报 CSV")
     ap.add_argument("--csv-out", default="", help="把逐日结果写 CSV")
@@ -436,6 +437,19 @@ def main() -> int:
                 nwp_map[(r["station"], r["date"])] = {
                     c: float(r[c]) for c in want if r.get(c) not in (None, "")}
         print(f"  NWP 覆盖 {len(nwp_map)} 站日", file=sys.stderr)
+
+    # 早晨探空派生量（sonde.py --build 出的表）
+    if args.sonde and os.path.exists(args.sonde):
+        n_sd = 0
+        for r in csv.DictReader(open(args.sonde, encoding="utf-8")):
+            k = (r["station"], r["date"])
+            if k not in nwp_map:
+                continue
+            for c, v in r.items():
+                if c.startswith("sd_") and v not in (None, ""):
+                    nwp_map[k]["__" + c] = float(v)
+            n_sd += 1
+        print(f"  探空覆盖 {n_sd} 站日", file=sys.stderr)
 
     # D+1 链路的订正后输出（train_mos --pred 导出的**样本外**测试期预报）。
     # 只在 --mos-oos 给了文件时挂上；缺的站日 __mosd 为 None，走缺测路径。
