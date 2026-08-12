@@ -263,6 +263,9 @@ def from_awc(stations, hours=30, retries=3):
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="nowcast.json")
+    ap.add_argument("--agree-with", default="",
+                    help="另一个模型 JSON，用同一批特征再算一遍，输出「一致?」列。"
+                         "**不改任何预报值**，只标注两个模型是否给出同一个整数")
     ap.add_argument("--stations", default="",
                     help="只跑这些站（逗号分隔）。默认跑模型里的全部站")
     ap.add_argument("--db", default="cn.sqlite")
@@ -383,7 +386,7 @@ def main() -> int:
     _hdr_eh = f"{'预期命中':>7}" if os.path.exists(
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "hit_table.json")) else ""
     print(f"\n  {'站点':<14}{'预报':>7}{p90_col}{'已达':>7}{'预计再升':>10}"
-          f"{_hdr_eh}{'更高?':>7}{'实况':>9}   备注")
+          f"{_hdr_eh}{'更高?':>7}{'一致?':>7}{'实况':>9}   备注")
 
     # 迟滞用的上一轮报出去的整数。报的是整数，连续值在 x.5 附近抖 0.02 度就会
     # 让整数翻个个儿 —— 15 个月回测里 61% 的逐小时改动是这种空转（动出去又回来）。
@@ -418,6 +421,47 @@ def main() -> int:
         except Exception as e:                          # noqa: BLE001
             print(f"[warn] GBM 没读成（{str(e)[:60]}），本轮只用线性", file=sys.stderr)
             _GBM, _NP = {}, None
+
+    # 对照模型（--agree-with）。**只标注，不改预报值。**
+    # 2026-08-12 实测: 两个模型给出同一个整数时 9 时命中 37.9%，分歧时 31.1%
+    # （差 6.8pt），而且**在剩余升幅分档内部依然全正**（+1.7~+15.6pt），
+    # 说明这是独立于「预期命中」的第二个维度。四变体只多 0.9pt，两个就够。
+    # 生产上 9 时本来就在跑不含 AIFS 的影子对照，等于免费。
+    _alt = _altgbm = None
+    if args.agree_with and os.path.exists(args.agree_with):
+        try:
+            _alt = json.load(open(args.agree_with, encoding="utf-8")).get(str(cutoff))
+            _ap = args.agree_with + ".gbm.pkl"
+            if _alt and os.path.exists(_ap) and _NP is not None:
+                import pickle as _pk
+                _altgbm = _pk.load(open(_ap, "rb")).get(cutoff)
+        except Exception as e:                         # noqa: BLE001
+            print(f"[warn] 对照模型 {args.agree_with} 读不出来（{e}），不输出一致性",
+                  file=sys.stderr)
+            _alt = None
+
+    def _alt_int(f, msf, stn):
+        """对照模型在同一行特征上的整数结果。任何异常都返回 None（列留空）。"""
+        if not _alt:
+            return None
+        try:
+            an, am = _alt["names"], _alt["median"]
+            per = (_alt.get("per_station") or {}).get(stn)
+            if per and not args.pooled:
+                mr, mh, ms = per["ridge"], per.get("hurdle"), per["median"]
+            else:
+                mr, mh, ms = _alt["ridge"], _alt.get("hurdle"), am
+            X, _ = N.matrix([{"f": f}], ms, an)
+            r = (N.pred_hurdle(mh, X)[0] if (args.hurdle and mh)
+                 else max(0.0, T.ridge_pred(mr, X)[0]))
+            gw = _alt.get("gbm_w")
+            if _altgbm is not None and gw is not None and _NP is not None:
+                Xg, _ = N.matrix([{"f": f}], am, an)
+                pg = max(0.0, float(_altgbm.predict(_NP.asarray(Xg, float))[0]))
+                r = gw * r + (1 - gw) * pg
+            return int(round(msf + r))
+        except Exception:                              # noqa: BLE001
+            return None
 
     # 超出概率查表（exceed_table.json）。**不改任何预报值**，只把
     # 「这个数会不会还往上走」量化出来印在旁边 —— 晚见顶的站在 15 时收敛之后
@@ -620,10 +664,12 @@ def main() -> int:
         conf = _exceed(cutoff, rise)
         eh = _exp_hit(cutoff, rise)
         ehs = f"{eh:>7.0%}" if eh is not None else ""
+        _ai = _alt_int(f, msf, stn)
+        agr = "" if _ai is None else ("一致" if _ai == shown else f"分歧{_ai}")
         pc = (f"{round(p90):>8}" if p90 is not None
               else (f"{'--':>8}" if args.p90 else ""))
         print(f"  {stn} {N.NAMES.get(stn,''):<9}{shown:>7}{pc}{msf:>7.0f}"
-              f"{rise:>+10.1f}{ehs}{conf:>7}{_otag}   {note}")
+              f"{rise:>+10.1f}{ehs}{conf:>7}{agr:>7}{_otag}   {note}")
         rows_out.append((stn, shown, msf, rise))
 
     if stale:

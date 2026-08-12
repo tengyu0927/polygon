@@ -468,6 +468,21 @@ def check_contracts(args):
                                     "exceed_table.json")),
       "exceed_table.json 在（「更高?」列的数据源）")
 
+    # 「一致?」列的对照模型必须在，否则那一列静默变空。同时它必须**不含**
+    # AIFS —— 两个模型一样的话一致性就恒为「一致」，这一列就废了。
+    _nf = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       "nowcast_nwp_noaifs.json")
+    ok_nf = os.path.exists(_nf)
+    if ok_nf:
+        try:
+            _n9 = json.load(open(_nf, encoding="utf-8")).get("9", {})
+            ok_nf = sum(1 for x in _n9.get("names", [])
+                        if x.endswith("_minus_m1")) == 6
+        except Exception:                              # noqa: BLE001
+            ok_nf = False
+    rep(ok_nf, "「一致?」的对照模型在，且确实不含 AIFS（6 个追加模式）",
+      "" if ok_nf else "缺 nowcast_nwp_noaifs.json 或它也含 AIFS，那一列会失效")
+
     # 站点清单只能有一个真相源 = stations.py。别处再抄一份，加站时必漏。
     # 已经犯过三次: wu_obs.to_rows 硬写 STATION="ZGSZ"（把济南观测灌进深圳
     # 25344 行）、predict_nowcast 硬写 WU_STATIONS={"ZGSZ"}（济南 12 时起

@@ -107,7 +107,13 @@ fi
 # 就抵掉了。15 时现在 87.4% 完全命中是全系统最高的一档，不拿它去赌 12%。
 if (( HOUR <= 14 )); then
     MODEL=nowcast_nwp.json
-    if (( HOUR == 9 )); then EXTRA=(--extra-models "$MODELS9")
+    if (( HOUR == 9 )); then
+        EXTRA=(--extra-models "$MODELS9")
+        # 「一致?」列: 用不含 AIFS 的旧模型在**同一批特征**上再算一遍。
+        # 不改任何预报值，只标注两者是否给出同一个整数。实测两模型一致时
+        # 9 时命中 37.9%、分歧时 31.1%（差 6.8pt），且在剩余升幅分档内部
+        # 依然全正（+1.7~+15.6pt）—— 是独立于「预期命中」的第二个维度。
+        [[ -f nowcast_nwp_noaifs.json ]] && EXTRA+=(--agree-with nowcast_nwp_noaifs.json)
     else EXTRA=(--extra-models "$MODELS"); fi
 else
     MODEL=nowcast_late.json
