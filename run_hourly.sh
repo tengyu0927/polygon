@@ -68,6 +68,18 @@ STATIONS=ZBAA,ZGGG,ZGSZ,ZHCC,ZHHH,ZSJN,ZSPD,ZSQD,ZUCK,ZUUU
 #    9/10 时 P=68%/63% 未过线,但方向为负、无害,一并保留以简化配置
 MODELS=ecmwf_ifs025,cma_grapes_global,icon_global,jma_gsm,gem_global,local_gfs
 # 追加模式的顺序必须与训练时 --nwp-csv2 的顺序一致，否则 m2_/m3_ 各列对错模式
+#
+# **9 时多一个第八成员 ecmwf_aifs025_single**（ECMWF 的 AI 模式 AIFS，
+# 数据驱动而非物理积分，与 IFS 机理互补）。2026-08-12 实测:
+#   原始 MAE D+1  AIFS 1.306 < ICON 1.502 < ECMWF 1.536 < GEM 1.661 < GFS 1.686
+#   9 时完全命中  34.78% -> 37.41%（+2.63pt, P=100%），MAE -0.0389（P=100%）
+# **只上 9 时**: 10 时 +0.69pt(P=80%)、11 时 +0.16pt(P=56%) 都不过线。
+#
+# 而且只用 2025-12 起那段过线 —— 全窗口 468 天是 +0.44pt/P=75%。2025 年中
+# 那段 AIFS 反而有害（6/7/8 月 -5.9/-4.9/-5.7pt），**这个断裂没有解释**:
+# 查过「早期 AIFS 版本弱」（反了，它对 ECMWF 的相对优势那时更大）和
+# 「训练样本不够」（不单调）。所以配了影子对照持续验证，见 run_hourly 末尾。
+MODELS9=$MODELS,ecmwf_aifs025_single
 
 [[ -n "$ONLY" ]] && STATIONS="$ONLY"
 
@@ -95,7 +107,8 @@ fi
 # 就抵掉了。15 时现在 87.4% 完全命中是全系统最高的一档，不拿它去赌 12%。
 if (( HOUR <= 14 )); then
     MODEL=nowcast_nwp.json
-    EXTRA=(--extra-models "$MODELS")
+    if (( HOUR == 9 )); then EXTRA=(--extra-models "$MODELS9")
+    else EXTRA=(--extra-models "$MODELS"); fi
 else
     MODEL=nowcast_late.json
     EXTRA=()
@@ -146,6 +159,19 @@ fi
 if [[ -z "$NOSIDE" ]]; then
     python3 ens_collect.py --db "${PLOYGON_ENS_DB:-ens.sqlite}" --days 2 \
         2>&1 | tail -1 >&2 || echo "  [warn] 集合采集失败（不影响预报）" >&2
+fi
+
+# 影子对照: 9 时同时用**不含 AIFS**的旧模型跑一份，只落盘不打屏。
+# AIFS 只在 2025-12 起那段过线、断裂原因不明，用生产数据继续验证 ——
+# 按逐日命中率的离散度，约 60 天足以分辨 5 个百分点的真实差异。
+# 失败绝不能影响正式预报，所以放在最后、全程 || true。
+if (( HOUR == 9 )) && [[ -z "$NOSIDE" ]] && [[ -f nowcast_nwp_noaifs.json ]]; then
+    {
+        echo "########## $(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S')  9 时影子(无AIFS) ##########"
+        PLOYGON_STATE=/tmp/_shadow_state.json python3 predict_nowcast.py \
+            --model nowcast_nwp_noaifs.json --cutoff 9 --hurdle --p90 \
+            $USE_LIVE --extra-models "$MODELS" ${ONLY:+--stations "$ONLY"}
+    } >> "${PLOYGON_SHADOW_LOG:-shadow_${TODAY}.log}" 2>&1 || true
 fi
 
 echo "已追加到 $LOG" >&2

@@ -435,13 +435,24 @@ def check_contracts(args):
     rep(ok, "run_daily 的模式列表是 run_hourly 的前缀（顺序一致）",
         f"临近多出: {la[len(lb):]}" if ok and len(la) > len(lb) else (a or ""))
 
+    # 9 时另有一份清单（MODELS9，多第八成员 AIFS）。按时次取对应的那份 ——
+    # 2026-08-12 加 AIFS 时这里只读 MODELS= 一行，当场报错，正是它该做的。
+    def models9_of(text):
+        for line in text.splitlines():
+            if line.startswith("MODELS9="):
+                v = line.split("=", 1)[1].strip()
+                return v.replace("$MODELS", models_of(text) or "")
+        return None
+    a9 = models9_of(src["run_hourly.sh"])
     n_models = len(a.split(",")) if a else 0
+    n_models9 = len(a9.split(",")) if a9 else n_models
     spec = json.load(open(args.nowcast_model, encoding="utf-8"))
     for k, v in spec.items():
         need = sum(1 for n in v["names"] if n.endswith("_minus_m1"))
         if need:
-            rep(need == n_models, f"{k} 时模型需要的追加模式数 == 脚本给的",
-              f"模型要 {need}，脚本给 {n_models}")
+            want = n_models9 if k == "9" else n_models
+            rep(need == want, f"{k} 时模型需要的追加模式数 == 脚本给的",
+              f"模型要 {need}，脚本给 {want}")
 
     # 时区: 所有取「今天/现在」的地方都必须是北京时
     bad = [f for f in ("run_hourly.sh", "run_daily.sh")
@@ -541,10 +552,21 @@ def main() -> int:
         # 9-11 时用前一天 12Z 的 18 小时，12-13 时用当天 00Z 的 6 小时。
         # 上线时漏了这一步，检查只喂 5 个追加模式，于是天天报「缺 m7_*」——
         # 生产其实是好的（run_hourly 传了 local_gfs），是检查自己没跟上。
+        # 2026-08-12 修正两处陈旧:
+        #   (a) 9-11 时是 mos_local12.csv 不是 local18 —— 2026-08-03 就从 18h
+        #       切到 12h 了（Δ=-0.0062、P=95.2%），本行漏改，逐列比对一直在
+        #       跟一个**不上线的成员**比。上面 want={9:12,10:12,11:12} 那张表
+        #       早就是对的，两处不一致本身就该被发现。
+        #   (b) 9 时多第八成员 mos_aifs.csv（AIFS），与 run_hourly 的 MODELS9 对应。
         args.nwp_csv2 = ["mos_ecmwf.csv", "mos_cma.csv", "mos_icon.csv",
                          "mos_jma_.csv", "mos_gem_.csv",
-                         "mos_local18.csv" if args.cutoff <= 11
+                         "mos_local12.csv" if args.cutoff <= 11
                          else "mos_local6.csv"]
+        if args.cutoff == 9:
+            # 只动 nwp_csv2（临近侧逐列比对用它）。**别碰 args.extra_models**
+            # —— 那个是给 D+1 的 predict_mos 用的，只有 5 个模式，
+            # 2026-08-12 误改过一次，当场把 predict_mos 跑挂。
+            args.nwp_csv2.append("mos_aifs.csv")
     if not args.date:
         args.date = (datetime.now().date() - timedelta(days=2)).isoformat()
 
