@@ -413,6 +413,10 @@ def main() -> int:
                     help="把滚动重训的 D+1 MOS 预报当特征加进来（组合两条路线）")
     ap.add_argument("--no-hurdle", action="store_true")
     ap.add_argument("--daily", action="store_true", help="逐日逐站明细")
+    ap.add_argument("--baseline-model", default="nowcast_nwp.json",
+                    help="用来自证特征数的线上模型 JSON")
+    ap.add_argument("--no-baseline-check", action="store_true",
+                    help="明确表示要测非部署配置，跳过特征数自证")
     ap.add_argument("--sonde", default="", help="sonde.py --build 出的探空特征表")
     ap.add_argument("--mos-oos", default="",
                     help="train_mos --pred 导出的样本外 D+1 预报 CSV")
@@ -470,6 +474,7 @@ def main() -> int:
 
     names = list(N.FEATS) if args.nwp_csv else \
         [n for n in N.FEATS if not N.is_nwp_feat(n)]
+
     if args.peak_feat:
         names = names + PEAK_FEATS
 
@@ -499,6 +504,40 @@ def main() -> int:
         mos_pred = mos_walkforward(T.load(args.nwp_csv), args.alphas)
         print(f"  {len(mos_pred)} 个站日", file=sys.stderr)
         names = names + MOS_FEATS
+
+    # **基线自证**: 特征数必须与线上模型该时次的项数一致，否则这次回测比的
+    # 不是生产在跑的东西。2026-08-12 一天之内栽了三次 ——
+    #   MOS 特征首轮: 给「基线」也带了全套 flag，两臂逐条相同、ΔMAE=0.0000
+    #   序贯逻辑诊断: 临时脚本少了 60 项，两臂都是弱模型，众数才显得能赢
+    #   12/13 时 AIFS: 基线开了 flag 跑成 120 项，而部署那两档是纯线性 73 项
+    # 三次都是「两臂一致但都不等于生产」——只核对两臂相同是不够的。
+    # 想故意测非部署配置就加 --no-baseline-check。
+    if not args.no_baseline_check and os.path.exists(args.baseline_model):
+        # **不要用裸 except 兜底**: 2026-08-12 第一版这里写 `except Exception:
+        # _spec = {}`，而本文件根本没 import json —— 抛的 NameError 被吞掉，
+        # 于是 _spec 恒为空、循环空转、这道守卫形同虚设，而且一声不吭。
+        # 守卫自己静默失效，比没有守卫更糟。读不出来就当场报错退出。
+        import json as _json
+        try:
+            _spec = _json.load(open(args.baseline_model, encoding="utf-8"))
+        except Exception as _e:                        # noqa: BLE001
+            print(f"[error] 读不出 {args.baseline_model}（{type(_e).__name__}: {_e}）"
+                  f"，无法自证基线。修好它，或加 --no-baseline-check。",
+                  file=sys.stderr)
+            return 1
+        for _c in args.cutoffs:
+            _blk = _spec.get(str(_c))
+            if not _blk:
+                continue
+            _want = len(_blk["names"])
+            if len(names) != _want:
+                print(f"[error] {_c} 时: 本次 {len(names)} 项特征，而线上 "
+                      f"{args.baseline_model} 是 {_want} 项 —— 这次回测比的不是"
+                      f"生产在跑的配置。\n        对齐环境变量，或明确加 "
+                      f"--no-baseline-check 表示你就是要测非部署配置。",
+                      file=sys.stderr)
+                return 1
+
     blks = blocks(s, e, args.retrain_days)
     print(f"评估期 {s} ~ {e}，{len(blks)} 个重训块，"
           f"特征 {len(names)} 项，{'两段式' if not args.no_hurdle else '直接回归'}",
