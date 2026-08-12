@@ -451,6 +451,12 @@ def check_contracts(args):
     rep("deb_weights" in src["predict_mos.py"] and "deb_weights" in src["merge_mos.py"],
       "DEB 训练端与预测端共用同一实现")
 
+    # 超出概率表必须在，否则「更高?」那一列静默变空 —— 晚见顶的站在 15 时
+    # 就又没有任何提示了（2026-08-12 加这一列正是为了补那个缺口）。
+    rep(os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "exceed_table.json")),
+      "exceed_table.json 在（「更高?」列的数据源）")
+
     # 站点清单只能有一个真相源 = stations.py。别处再抄一份，加站时必漏。
     # 已经犯过三次: wu_obs.to_rows 硬写 STATION="ZGSZ"（把济南观测灌进深圳
     # 25344 行）、predict_nowcast 硬写 WU_STATIONS={"ZGSZ"}（济南 12 时起

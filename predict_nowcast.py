@@ -383,7 +383,7 @@ def main() -> int:
     _hdr_eh = f"{'预期命中':>7}" if os.path.exists(
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "hit_table.json")) else ""
     print(f"\n  {'站点':<14}{'预报':>7}{p90_col}{'已达':>7}{'预计再升':>10}"
-          f"{_hdr_eh}{'把握':>6}{'实况':>9}   备注")
+          f"{_hdr_eh}{'更高?':>7}{'实况':>9}   备注")
 
     # 迟滞用的上一轮报出去的整数。报的是整数，连续值在 x.5 附近抖 0.02 度就会
     # 让整数翻个个儿 —— 15 个月回测里 61% 的逐小时改动是这种空转（动出去又回来）。
@@ -418,6 +418,24 @@ def main() -> int:
         except Exception as e:                          # noqa: BLE001
             print(f"[warn] GBM 没读成（{str(e)[:60]}），本轮只用线性", file=sys.stderr)
             _GBM, _NP = {}, None
+
+    # 超出概率查表（exceed_table.json）。**不改任何预报值**，只把
+    # 「这个数会不会还往上走」量化出来印在旁边 —— 晚见顶的站在 15 时收敛之后
+    # 原本一点提示都没有，这一列就是补那个缺口。
+    _exc = {}
+    _ep = os.path.join(os.path.dirname(os.path.abspath(__file__)), "exceed_table.json")
+    if os.path.exists(_ep):
+        try:
+            _exc = json.load(open(_ep, encoding="utf-8"))
+        except Exception:                              # noqa: BLE001
+            _exc = {}
+
+    def _exceed(cut, rise):
+        if not _exc or rise >= _exc["edges"][-1]:
+            return ""
+        i = next((k for k, e in enumerate(_exc["edges"]) if rise < e), None)
+        c = _exc["cells"].get(f"{cut}|{i}")
+        return "" if not c else f"↑{c[0]:.0%}"
 
     # 「预期命中率」查表（build_hit_table.py 生成）。**不改任何预报值**，
     # 只是把「这个数该不该信」量化出来印在旁边。两周生产 752 条 + 15 个月回测
@@ -587,13 +605,25 @@ def main() -> int:
         #   剩余>=0.5  不管几点都只有 31-50%
         # 命中率几乎不随时次变化，变的只有覆盖率 —— 预报不会随时间"变准"，
         # 时间只是把不确定的情况物理性地消解掉。
-        conf = "已定" if rise < 0.15 else ("大致" if rise < 0.5 else "")
+        # 「把握」改印**超出概率**，不再用「已定/大致」这种安慰性的词。
+        # 2026-08-12 实测（15 个月回测）: 只要 rise<0.5，报错时 **100% 是报低**
+        #   15 时 <0.15  命中 96%  报低 4%  报高 0%
+        #   15 时 .15-.5 命中 76%  报低 24% 报高 0%
+        #   14 时 .15-.5 命中 72%  报低 28% 报高 0%
+        #   13 时 .15-.5 命中 69%  报低 31% 报高 0%
+        # 这是结构性的: 「已达」是硬底，模型说「几乎不会再升」时唯一的出错
+        # 方式就是它还是升了。所以这一列印「↑N%」= 有 N% 概率比这个数更高、
+        # 不会更低。生产上 12 条「已定」报错的记录也是 12/12 全部报低。
+        #
+        # rise>=0.5 时误差是双向的（14 时报高占 41%），不印 —— 那时以「预报」
+        # 和「不排除」两列为准。
+        conf = _exceed(cutoff, rise)
         eh = _exp_hit(cutoff, rise)
         ehs = f"{eh:>7.0%}" if eh is not None else ""
         pc = (f"{round(p90):>8}" if p90 is not None
               else (f"{'--':>8}" if args.p90 else ""))
         print(f"  {stn} {N.NAMES.get(stn,''):<9}{shown:>7}{pc}{msf:>7.0f}"
-              f"{rise:>+10.1f}{ehs}{conf:>6}{_otag}   {note}")
+              f"{rise:>+10.1f}{ehs}{conf:>7}{_otag}   {note}")
         rows_out.append((stn, shown, msf, rise))
 
     if stale:
@@ -613,7 +643,11 @@ def main() -> int:
         print(f"[warn] 迟滞状态没写成 ({e})，下一轮会退回普通四舍五入", file=sys.stderr)
 
     if any(r[3] < 0.5 for r in rows_out):
-        print(f"\n「把握」= 预计还要升的幅度已经很小，当天基本走完了。"
+        print("\n「更高?」= 有多大概率比报出去的这个数**更高**。"
+              "实测只要标了这一列，错的时候 100% 是报低、从来没报高过 —— "
+              "「已达」是硬底，模型说不再升时唯一的出错方式就是它还是升了。"
+              "\n没标的（预计再升 >= 0.5 度）误差是双向的，以「预报」「不排除」两列为准。")
+        print(f""
               f"「已定」实测完全命中 83~93%、「大致」75~79%，"
               f"没标的不管几点都只有 31~50%。")
         print("**但「已定」不等于不再改。** 回测里标了「已定」之后仍有 ~22% "
