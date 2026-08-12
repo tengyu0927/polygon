@@ -219,6 +219,8 @@ def fit_block(tr, names, alphas, val_days=90, peak=False, cutoff=12):
         return {"median": med, "ridge": best[2], "alpha": best[0],
                 "hurdle": N.fit_hurdle(rows_tr, [best[0]], med, names),
                 "ordinal": N.fit_ordinal(rows_tr, best[0], med, names),
+                "ordcls": (N.fit_ordinal_cls(rows_tr, med, names)
+                           if os.environ.get("PLOYGON_ORDCLS") == "1" else None),
                 "q90": q90, "rise_mu": rise_mu, "gbm": gbm, "cls": cls}
 
     # 第一段: 见顶时刻辅助模型。只用训练集拟合，再把预报值注入全部行的特征
@@ -361,6 +363,9 @@ def predict(m, rows, names, hurdle, thresh=0.0):
 
 
 def rise_pmf(m, rows, names):
+    if m.get("ordcls"):
+        X, _ = N.matrix(rows, m["median"], names)
+        return N.rise_pmf_cls(m["ordcls"], X)
     if not m.get("ordinal"):
         return None
     X, _ = N.matrix(rows, m["median"], names)

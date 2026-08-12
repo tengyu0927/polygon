@@ -57,3 +57,5 @@ bt_*.csv
 mos_roll.csv
 sonde/
 sonde.csv
+mos_aifs.sqlite
+mos_aifs.csv

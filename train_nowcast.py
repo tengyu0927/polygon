@@ -762,6 +762,88 @@ def fit_ordinal(rows, alpha, med, names):
     return out or None
 
 
+def fit_ordinal_cls(rows, med, names, C=0.3):
+    """序贯**逻辑**回归拟 P(rise >= k)。存系数不存 pkl —— 预测端只要一个
+    sigmoid，零依赖。
+
+    2026-08-12: 现役的 fit_ordinal 用岭回归拟 0/1 目标，是线性概率模型，
+    标定差（`fit_quantile` 的注释早就写了）。后果不只是尾部覆盖率 ——
+    **它让 PMF 太平**（峰值概率中位数 0.26），众数极不稳定，实测比均值取整
+    差 4-8 个点。换成逻辑回归后峰值概率升到 0.35-0.55，众数第一次赢过均值:
+
+      时次   均值取整   逻辑回归序贯+保序
+      9 时   30.21%   31.85%  (+1.64)
+      10 时  33.19%   35.03%  (+1.84)
+      11 时  38.79%   39.98%  (+1.19)
+      12 时  43.50%   46.14%  (+2.64)
+      13 时  55.10%   57.39%  (+2.29)
+
+    与已否决的「多分类 GBM 直接优化命中率」（-2.6pt）不同: 那个把各档当成
+    无序类别、样本被切碎；这里是序贯二分类，用上了升幅的有序结构。
+    """
+    try:
+        import numpy as _np
+        from sklearn.linear_model import LogisticRegression as _LR
+    except ImportError:
+        return None
+    X, _ = matrix(rows, med, names)
+    A = _np.asarray(X, float)
+    mu, sd = A.mean(0), A.std(0)
+    sd[sd < 1e-9] = 1.0
+    A = (A - mu) / sd
+    out = []
+    kmax = min(max(int(r["rise"]) for r in rows), MAX_RISE)
+    for k in range(1, kmax + 1):
+        y = _np.asarray([1.0 if r["rise"] >= k else 0.0 for r in rows])
+        if y.sum() < 30 or (len(y) - y.sum()) < 30:
+            break
+        m = _LR(C=C, max_iter=4000).fit(A, y)
+        out.append({"w": m.coef_[0].tolist(), "b": float(m.intercept_[0])})
+    if not out:
+        return None
+    return {"mods": out, "mu": mu.tolist(), "sd": sd.tolist()}
+
+
+def _pava(s):
+    """保序回归（非增）。违反单调时取加权平均，不像单向 min 那样一律取低。
+    实测单换这个没用（26.34% -> 26.29%）—— 病根是线性概率模型本身，
+    不是单调化方式。留着是因为换分类器后它才是正确的做法。"""
+    v, w = list(s), [1.0] * len(s)
+    i = 0
+    while i < len(v) - 1:
+        if v[i] < v[i + 1] - 1e-12:
+            tot = v[i] * w[i] + v[i + 1] * w[i + 1]
+            ww = w[i] + w[i + 1]
+            v[i] = tot / ww
+            w[i] = ww
+            del v[i + 1]
+            del w[i + 1]
+            i = max(0, i - 1)
+        else:
+            i += 1
+    out = []
+    for val, wt in zip(v, w):
+        out += [val] * int(wt)
+    return out
+
+
+def rise_pmf_cls(ordc, X):
+    """fit_ordinal_cls 的 PMF。sigmoid + 保序回归 + 差分。"""
+    import math as _m
+    mu, sd = ordc["mu"], ordc["sd"]
+    out = []
+    for row in X:
+        z = [(row[j] - mu[j]) / sd[j] for j in range(len(row))]
+        cum = []
+        for m in ordc["mods"]:
+            t = m["b"] + sum(m["w"][j] * z[j] for j in range(len(z)))
+            cum.append(1.0 / (1.0 + _m.exp(-max(-30.0, min(30.0, t)))))
+        s = _pava(cum)
+        out.append([1.0 - s[0]] + [s[k - 1] - s[k] for k in range(1, len(s))]
+                   + [s[-1]])
+    return out
+
+
 def rise_pmf(ordm, X):
     """P(rise>=k) 逐 k 预测后强制单调，差分得每档概率。"""
     cum = [[min(1.0, max(0.0, v)) for v in T.ridge_pred(mk, X)] for mk in ordm]
