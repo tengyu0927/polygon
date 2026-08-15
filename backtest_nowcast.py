@@ -221,6 +221,8 @@ def fit_block(tr, names, alphas, val_days=90, peak=False, cutoff=12):
                 "ordinal": N.fit_ordinal(rows_tr, best[0], med, names),
                 "ordcls": (N.fit_ordinal_cls(rows_tr, med, names)
                            if os.environ.get("PLOYGON_ORDCLS") == "1" else None),
+                "settled": (N.fit_settled(rows_tr, med, names)
+                            if os.environ.get("PLOYGON_SETTLED") == "1" else None),
                 "q90": q90, "rise_mu": rise_mu, "gbm": gbm, "cls": cls}
 
     # 第一段: 见顶时刻辅助模型。只用训练集拟合，再把预报值注入全部行的特征
@@ -620,6 +622,14 @@ def main() -> int:
                     p90_r = [max(0.0, v) for v in T.ridge_pred(m["q90"], Xq)]
                 else:
                     p90_r = N.rise_quantile(pmf, 0.90) if pmf else mean_r
+                # 已见顶覆盖: 判定为「天已过完」就直接报已达值（见 fit_settled）
+                if m.get("settled") is not None:
+                    Xs, _ = N.matrix(sub, m["median"], names)
+                    import numpy as _np
+                    ps = m["settled"].predict_proba(_np.asarray(Xs, float))[:, 1]
+                    mean_r = [0.0 if p >= N.SETTLED_TH else v
+                              for p, v in zip(ps, mean_r)]
+
                 for r, rm, rk, rw, rq in zip(sub, mean_r, mode_r, win_r, p90_r):
                     res[(stn, cutoff)].append(
                         (r["date"], r["so_far"] + rm, r["tmax"], r["so_far"],

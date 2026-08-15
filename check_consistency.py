@@ -483,6 +483,21 @@ def check_contracts(args):
     rep(ok_nf, "「一致?」的对照模型在，且确实不含 AIFS（6 个追加模式）",
       "" if ok_nf else "缺 nowcast_nwp_noaifs.json 或它也含 AIFS，那一列会失效")
 
+    # 「已见顶」判别器必须覆盖 10-14 时。缺了预测端会静默跳过覆盖逻辑 ——
+    # 生产回测实测 12 时 +1.33pt、13 时 +1.89pt，丢了不会报错只会慢慢变差。
+    import train_nowcast as _TN
+    _stp = args.nowcast_model + ".settled.pkl"
+    have = set()
+    if os.path.exists(_stp):
+        try:
+            import pickle as _pk
+            have = set(_pk.load(open(_stp, "rb")))
+        except Exception:                              # noqa: BLE001
+            have = set()
+    miss_st = sorted(_TN.SETTLED_CUTOFFS - have)
+    rep(not miss_st, "「已见顶」判别器覆盖 10-14 时",
+      "" if not miss_st else f"缺时次 {miss_st}（{_stp}）")
+
     # 站点清单只能有一个真相源 = stations.py。别处再抄一份，加站时必漏。
     # 已经犯过三次: wu_obs.to_rows 硬写 STATION="ZGSZ"（把济南观测灌进深圳
     # 25344 行）、predict_nowcast 硬写 WU_STATIONS={"ZGSZ"}（济南 12 时起

@@ -632,6 +632,7 @@ if CURVE:
 #     无模式输入），换成六模式+非线性+天气型后 0.3471 -> 0.3330（P=97%）
 NLIN_CUTOFFS = {9, 10, 11, 14}
 GBM_STORE = {}
+SETTLED_STORE = {}                     # 时次 -> 「已见顶」判别器
 
 XSTN = os.environ.get("PLOYGON_XSTN") == "1"
 # 2026-08-08 加郑州/济南时未给伙伴 —— 伙伴是按 2010 起夏季日最高温距平的
@@ -760,6 +761,59 @@ def fit_ordinal(rows, alpha, med, names):
             break
         out.append(T.ridge_fit(X, yk, alpha))
     return out or None
+
+
+def fit_settled(rows, med, names):
+    """判别「今天是否已经见顶」（rise <= 0）。**不改预报模型，只做覆盖决策。**
+
+    2026-08-15 上线。动机来自一处实测的大漏:
+
+      13 时，已见顶的站日占 48.5%，模型在那上面只命中 64.9% ——
+      而「直接报已达值」是 99.9%。天已经过完了，模型还在报一个不会
+      发生的升温。这一处就吃掉了约 17 个百分点的完全命中率。
+
+    决策规则: P(已见顶) >= 0.5 就把预报改成 round(已达值)，否则保留原预报。
+    双向验证（前半训->后半验 / 后半训->前半验，标准窗口）:
+
+      时次   基线      新       Δ        反向Δ     被改比例
+      9 时  35.66%  36.72%  +1.07%   +0.62%     8%
+      10 时 38.35%  39.37%  +1.02%   +1.07%     9%
+      11 时 43.06%  44.79%  +1.73%   +1.02%    13%
+      12 时 46.18%  49.25%  +3.06%   +2.66%    25%
+      13 时 57.21%  59.82%  +2.62%   +2.80%    47%
+      14 时 67.63%  70.42%  +2.79%   +2.00%    74%
+
+    试过更复杂的都不如它（同一批数据、同样双向验证）:
+      软收缩(按概率压升幅) 58.4 | 直接训「换了更好」57.5 | 三/四选一 55.3/55.1
+      分站阈值 59.2（过拟合）| k-NN 类比 55.4-56.7 | 天气型分群 59.5/58.4
+      判别器加探空/次小时观测: AUC 0.835->0.837，命中不变
+    唯一略好的是「w=0.25 与专训升幅模型混合」（+0.4pt），但要多一个模型、
+    多一处训练/预测一致性风险，不值得 —— 见 README。
+
+    阈值 0.5 是扫 0.2~0.95 选出来的，分站阈值反而更差。
+    """
+    try:
+        from sklearn.ensemble import HistGradientBoostingClassifier as _C
+        import numpy as _np
+    except ImportError:
+        return None
+    X, _ = matrix(rows, med, names)
+    y = _np.asarray([1 if r["rise"] <= 0 else 0 for r in rows])
+    if y.sum() < 100 or (len(y) - y.sum()) < 100:
+        return None
+    return _C(max_depth=4, max_iter=500, learning_rate=0.05,
+              min_samples_leaf=15, random_state=0).fit(_np.asarray(X, float), y)
+
+
+SETTLED_TH = 0.5
+# 只在 10-14 时启用。生产回测（标准窗口，对各档部署配置）:
+#   9 时  +0.04pt  P=76.8%   不过线 —— 那一档 AIFS 已补过，判别器没有额外空间
+#   10 时 +0.22pt  P=95.1%   ★
+#   11 时 +0.35pt  P=95.3%   ★
+#   12 时 +1.33pt  P=100.0%  ★  上半 +0.63 / 下半 +2.01
+#   13 时 +1.89pt  P=100.0%  ★★ 上半 +2.21 / 下半 +1.57，两半各自显著
+#   14 时 +1.29pt  P= 99.9%  ★
+SETTLED_CUTOFFS = {10, 11, 12, 13, 14}
 
 
 def fit_ordinal_cls(rows, med, names, C=0.3):
@@ -1212,6 +1266,8 @@ def run_cutoff(days, cutoff, clim_r, clim_p, nwp_map, args, m2_maps=()):
             print(f"\n  非线性: GBM 已拟合，融合权重 ridge={bw:.1f} / gbm={1-bw:.1f}")
     # pkl 里**只存模型**，融合权重走 JSON 的 gbm_w —— 两处都存会漂
     GBM_STORE[cutoff] = None if gbm is None else gbm[0]
+    if cutoff in SETTLED_CUTOFFS:
+        SETTLED_STORE[cutoff] = fit_settled(tr + va, med, names)
 
     return {"cutoff": cutoff, "alpha": alpha, "names": names, "median": med,
             "ridge": mdl, "hurdle": hm, "ordinal": ordm, "q90": q90,
@@ -1288,6 +1344,12 @@ def main() -> int:
                 pickle.dump(gb, fh)
             print(f"GBM 部分已存 {args.dump}.gbm.pkl"
                   f"（时次 {sorted(gb)}；预测端缺 sklearn 会自动降级）")
+        st = {c: g for c, g in SETTLED_STORE.items() if g is not None and c in out}
+        if st:
+            import pickle
+            with open(args.dump + ".settled.pkl", "wb") as fh:
+                pickle.dump(st, fh)
+            print(f"「已见顶」判别器已存 {args.dump}.settled.pkl（时次 {sorted(st)}）")
     return 0
 
 

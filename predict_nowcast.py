@@ -480,6 +480,19 @@ def main() -> int:
         i = next((k for k, e in enumerate(_exc["edges"]) if rise < e), None)
         c = _exc["cells"].get(f"{cut}|{i}")
         return "" if not c else f"↑{c[0]:.0%}"
+    # 「已见顶」判别器（<model>.settled.pkl）。判定天已过完就把预报改成
+    # 已达值 —— 见 train_nowcast.fit_settled。只在 10-14 时有，9/15 时没有。
+    # 缺文件/缺 sklearn 自动跳过，不报错。
+    _SETTLED = None
+    _sp = args.model + ".settled.pkl"
+    if os.path.exists(_sp) and _NP is not None:
+        try:
+            import pickle as _pk2
+            _SETTLED = _pk2.load(open(_sp, "rb")).get(cutoff)
+        except Exception as e:                         # noqa: BLE001
+            print(f"[warn] {_sp} 读不出来（{e}），本轮不做已见顶覆盖",
+                  file=sys.stderr)
+
 
     # 「预期命中率」查表（build_hit_table.py 生成）。**不改任何预报值**，
     # 只是把「这个数该不该信」量化出来印在旁边。两周生产 752 条 + 15 个月回测
@@ -594,6 +607,10 @@ def main() -> int:
             pg = max(0.0, float(gmod.predict(_NP.asarray(Xg, float))[0]))
             rise = gw * rise + (1 - gw) * pg
             tag += "+GBM"
+        if _SETTLED is not None:
+            Xs, _ = N.matrix([{"f": f}], med, names)
+            if float(_SETTLED.predict_proba(_NP.asarray(Xs, float))[0][1]) >= N.SETTLED_TH:
+                rise, tag = 0.0, tag + "|已见顶"
         fin = msf + rise
 
         p90 = None
