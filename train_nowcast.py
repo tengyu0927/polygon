@@ -151,6 +151,25 @@ if os.environ.get("PLOYGON_WINDAM") == "1":
 # 训练端读 IGRA 归档、预测端读怀俄明实时，但派生量一律由 sonde.feats()
 # 这一个函数算（见 sonde.py 顶部）。双源比对: 核心项 0/30 完全一致，
 # 总不一致率 2.2%（集中在深圳，香港站是全分辨率、浅逆温落在网格点之间）。
+# 午后逐小时演变 + 轮次漂移。**都来自已有数据，不需要新下载**:
+#   午后场: mos_fcst.sqlite 存的是逐小时（514 万行），现在只用了日聚合
+#   轮次漂移: mos.csv 有 lead=1/2 两轮对同一目标日，|差| 中位 0.50 度，
+#             衡量「模式自己有多确定」——这个量从没进过模型
+# 15 分钟分辨率的**形状**特征（不是水平量 —— 水平量日聚合里已有）。
+# 实测 :15 分的值有 52% 偏离相邻整点线性插值 >0.05 度，是真产品不是插值。
+# 提取小时值里不存在的量: 温度曲线曲率与最平窗口（接近见顶时变平）、
+# 辐射 15 分钟方差与爬升幅度（对流云打断的频次）、云量高频翻转率。
+Q15_FEATS = ["q15_t_curv","q15_t_slope13","q15_t_slope_ratio","q15_sw_var_pm",
+             "q15_cc_flip","q15_sw_ramp","q15_t_flat_min","q15_dr_frac_pm"]
+if os.environ.get("PLOYGON_Q15") == "1":
+    FEATS += Q15_FEATS
+
+PM_FEATS = ["pm_cld_mean","pm_cld_max","pm_cld_trend","pm_swr_mean","pm_swr_max",
+            "pm_swr_trend","pm_t_peak_h","pm_t_rise_after13","pm_t_late_frac",
+            "run_drift","run_drift_abs"]
+if os.environ.get("PLOYGON_PM") == "1":
+    FEATS += PM_FEATS
+
 SONDE_FEATS = ["sd_th925", "sd_th850", "sd_th_inv", "sd_inv_dt", "sd_inv_dp",
                "sd_lapse_p", "sd_dpd_low", "sd_t850", "sd_t700",
                "sd_th850_minus_sofar"]
@@ -520,6 +539,10 @@ def build_feats(o, cutoff, prev, clim_r, clim_p, doy, nwp):
     f["nwp_minus_sofar"] = None if f["nwp_tmax"] is None else f["nwp_tmax"] - msf
     tp, dp = g.get("temperature_2m_peakmean"), g.get("dew_point_2m_peakmean")
     f["nwp_dpd_peak"] = None if (tp is None or dp is None) else tp - dp
+    for k in Q15_FEATS:
+        f[k] = g.get("__" + k)
+    for k in PM_FEATS:
+        f[k] = g.get("__" + k)
     for k in ("sd_th925", "sd_th850", "sd_th_inv", "sd_inv_dt", "sd_inv_dp",
               "sd_lapse_p", "sd_dpd_low", "sd_t850", "sd_t700"):
         f[k] = g.get("__" + k)

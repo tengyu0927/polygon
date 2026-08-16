@@ -61,3 +61,5 @@ mos_aifs.sqlite
 mos_aifs.csv
 shadow_*.log
 *.pre_aifs
+m15_feat.csv
+hourly_pm.csv

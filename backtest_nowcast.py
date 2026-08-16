@@ -419,6 +419,8 @@ def main() -> int:
                     help="用来自证特征数的线上模型 JSON")
     ap.add_argument("--no-baseline-check", action="store_true",
                     help="明确表示要测非部署配置，跳过特征数自证")
+    ap.add_argument("--q15", default="", help="m15_feat.csv（15 分钟形状特征）")
+    ap.add_argument("--pm", default="", help="hourly_pm.csv（午后演变+轮次漂移）")
     ap.add_argument("--sonde", default="", help="sonde.py --build 出的探空特征表")
     ap.add_argument("--mos-oos", default="",
                     help="train_mos --pred 导出的样本外 D+1 预报 CSV")
@@ -448,6 +450,32 @@ def main() -> int:
                 nwp_map[(r["station"], r["date"])] = {
                     c: float(r[c]) for c in want if r.get(c) not in (None, "")}
         print(f"  NWP 覆盖 {len(nwp_map)} 站日", file=sys.stderr)
+
+    # 15 分钟形状特征
+    if args.q15 and os.path.exists(args.q15):
+        n_q = 0
+        for r in csv.DictReader(open(args.q15, encoding="utf-8")):
+            k = (r["station"], r["date"])
+            if k not in nwp_map:
+                continue
+            for c, v in r.items():
+                if c.startswith("q15_") and v not in (None, ""):
+                    nwp_map[k]["__" + c] = float(v)
+            n_q += 1
+        print(f"  15 分钟形状覆盖 {n_q} 站日", file=sys.stderr)
+
+    # 午后逐小时演变 + 轮次漂移
+    if args.pm and os.path.exists(args.pm):
+        n_pm = 0
+        for r in csv.DictReader(open(args.pm, encoding="utf-8")):
+            k = (r["station"], r["date"])
+            if k not in nwp_map:
+                continue
+            for c, v in r.items():
+                if (c.startswith("pm_") or c.startswith("run_")) and v not in (None, ""):
+                    nwp_map[k]["__" + c] = float(v)
+            n_pm += 1
+        print(f"  午后/漂移覆盖 {n_pm} 站日", file=sys.stderr)
 
     # 早晨探空派生量（sonde.py --build 出的表）
     if args.sonde and os.path.exists(args.sonde):
