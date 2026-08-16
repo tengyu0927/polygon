@@ -470,6 +470,22 @@ def check_contracts(args):
     rep(os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                     "bucket_table.json")),
       "bucket_table.json 在（档位配置建议的数据源）")
+    # 高优势清单要两样: edge_table.json + 生产每天生成的 pred_mos.csv。
+    # pred_mos.csv 若陈旧（不含今天），清单会静默变空 —— 那正是最该有提示的时候。
+    _et = os.path.join(os.path.dirname(os.path.abspath(__file__)), "edge_table.json")
+    rep(os.path.exists(_et), "edge_table.json 在（高优势清单的数据源）")
+    _pm = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pred_mos.csv")
+    fresh = False
+    if os.path.exists(_pm):
+        try:
+            import csv as _csv
+            ds = {r["date"] for r in _csv.DictReader(open(_pm, encoding="utf-8"))
+                  if r.get("lead") == "1"}
+            fresh = bool(ds) and max(ds) >= (datetime.now() - timedelta(days=1)).date().isoformat()
+        except Exception:                              # noqa: BLE001
+            fresh = False
+    rep(fresh, "pred_mos.csv 是新的（高优势清单要用它当隔夜对照）",
+      "" if fresh else "缺失或陈旧 —— run_daily.sh 没跑成，清单会静默变空")
 
     # 「一致?」列的对照模型必须在，否则那一列静默变空。同时它必须**不含**
     # AIFS —— 两个模型一样的话一致性就恒为「一致」，这一列就废了。

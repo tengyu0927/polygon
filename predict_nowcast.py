@@ -17,6 +17,7 @@ predict_nowcast.py — 用当天上午实况预报今日最高温
 from __future__ import annotations
 
 import argparse
+import csv as csv_mod
 import json
 import os
 import sqlite3
@@ -480,6 +481,48 @@ def main() -> int:
         i = next((k for k, e in enumerate(_exc["edges"]) if rise < e), None)
         c = _exc["cells"].get(f"{cut}|{i}")
         return "" if not c else f"↑{c[0]:.0%}"
+    # 高优势清单（edge_table.json + 生产已有的 pred_mos.csv）。
+    # **不改任何预报值。** 回答的是「什么时候我们对而隔夜预报错」——
+    # 盘口大概率锚定在隔夜预报上，所以优势 = 我们的把握 × 隔夜的错误。
+    #
+    # 实测（标准窗口，隔夜用 mos_rolling.py 的滚动样本外 D+1，MAE 0.99）:
+    #   12 时 与隔夜差 1 度 且 剩余<0.25   447 站日  我们 72% / 隔夜 16%  +57pt
+    #   12 时 与隔夜差 >=2 度 且 剩余<0.25  233 站日  我们 65% / 隔夜  4%  +61pt
+    #   13 时 与隔夜差 >=2 度 且 剩余<0.25  460 站日  我们 69% / 隔夜  3%  +65pt
+    #   与隔夜一致时优势恒为 0（同一个数，谁也不比谁强）
+    # 这两类合计约占站日的 15%，每天约 1.5 个站。
+    _EDGE = {}
+    _ep2 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "edge_table.json")
+    if os.path.exists(_ep2):
+        try:
+            _EDGE = json.load(open(_ep2, encoding="utf-8"))
+        except Exception:                              # noqa: BLE001
+            _EDGE = {}
+    # 隔夜 D+1: run_daily.sh 每天 23:59 生成 pred_mos.csv，直接读，不新增取数
+    _D1 = {}
+    _mp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pred_mos.csv")
+    if os.path.exists(_mp):
+        try:
+            for _r in csv_mod.DictReader(open(_mp, encoding="utf-8")):
+                if _r.get("lead") == "1" and _r.get("date") == tgt.isoformat():
+                    _D1[_r["station"]] = int(round(float(_r["pred"])))
+        except Exception as e:                         # noqa: BLE001
+            print(f"[warn] pred_mos.csv 读不出来（{e}），本轮无高优势清单",
+                  file=sys.stderr)
+
+    def _edge(stn, rise, shown):
+        d1 = _D1.get(stn)
+        if d1 is None or not _EDGE:
+            return None
+        dd = abs(shown - d1)
+        db = 0 if dd == 0 else (1 if dd == 1 else 2)
+        rb = next((i for i, e in enumerate(_EDGE["rise_edges"]) if rise < e),
+                  len(_EDGE["rise_edges"]))
+        c = _EDGE["cells"].get(f"{cutoff}|{db}|{rb}")
+        if not c or db == 0:
+            return None
+        return (d1, c[0], c[1], c[2], c[0] - c[2])
+
     # 档位配置建议（bucket_table.json）。**不改任何预报值**，只回答
     # 「这个站今天该买几档」—— 盘口是分档的，而误差系统性偏低（今天所有
     # 量化都指向这一点: 标了把握的预报错时 100% 是报低）。
@@ -554,6 +597,7 @@ def main() -> int:
     warned_p90 = False
     rows_out = []
     _advice = []
+    _edges = []
     # 每个站用的是哪个实况源、最新一条是几点。**只是标识，不改任何预报值。**
     # 起因: 滞后 1-2 小时的实况会让模型抓不住当下的升温趋势，而 morning() 的
     # 硬防护只挡 >2 小时（train_nowcast.py 的 `max(o) < cutoff - 2`），
@@ -719,9 +763,21 @@ def main() -> int:
         print(f"  {stn} {N.NAMES.get(stn,''):<9}{shown:>7}{pc}{msf:>7.0f}"
               f"{rise:>+10.1f}{ehs}{conf:>7}{agr:>7}{_otag}   {note}")
         rows_out.append((stn, shown, msf, rise))
+        _e = _edge(stn, rise, shown)
+        if _e and _e[4] >= 0.25:
+            _edges.append((stn, shown, _e))
         _adv, _cov = _bucket_advice(cutoff, rise, shown)
         if _adv:
             _advice.append((stn, _adv, _cov, rise))
+
+    if _edges:
+        print(f"\n── 高优势清单（我们有把握、而隔夜预报大概率错）")
+        print(f"  {'站点':<14}{'我们':>5}{'隔夜':>6}{'一档':>7}{'两档':>7}{'隔夜命中':>9}{'优势':>7}")
+        for stn, sh, (d1, o1, o2, dh, adv) in sorted(_edges, key=lambda x: -x[2][4]):
+            print(f"  {stn} {N.NAMES.get(stn,''):<9}{sh:>5}{d1:>6}{o1:>7.0%}{o2:>7.0%}"
+                  f"{dh:>9.0%}{adv:>+7.0%}")
+        print(f"  盘口若锚定隔夜预报，这些站的价格最可能是错的。"
+              f"没列出的站要么与隔夜一致（无优势），要么我们自己也没把握。")
 
     if _advice:
         print(f"\n── 档位配置建议（盘口分档时用；**不改上面的预报值**）")
