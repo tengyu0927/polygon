@@ -480,6 +480,36 @@ def main() -> int:
         i = next((k for k, e in enumerate(_exc["edges"]) if rise < e), None)
         c = _exc["cells"].get(f"{cut}|{i}")
         return "" if not c else f"↑{c[0]:.0%}"
+    # 档位配置建议（bucket_table.json）。**不改任何预报值**，只回答
+    # 「这个站今天该买几档」—— 盘口是分档的，而误差系统性偏低（今天所有
+    # 量化都指向这一点: 标了把握的预报错时 100% 是报低）。
+    # 实测 12 时: 只买点预报 47-48%，买「点预报+上一档」71-73%（双向验证
+    # 72.7%/71.2%），买 ±1 三档 90%。**第二档必须往上买** —— +1 比 -1 多
+    # 7 个百分点。学习型判上下反而更差（69.8% vs 72.7%），一律 +1 最优。
+    _BK = {}
+    _bp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bucket_table.json")
+    if os.path.exists(_bp):
+        try:
+            _BK = json.load(open(_bp, encoding="utf-8"))
+        except Exception:                              # noqa: BLE001
+            _BK = {}
+
+    def _bucket_advice(cut, rise, shown):
+        """返回 (建议档位串, 历史覆盖率串)。样本不足就返回空。"""
+        if not _BK:
+            return "", ""
+        i = next((k for k, e in enumerate(_BK["edges"]) if rise < e), len(_BK["edges"]))
+        c = _BK["cells"].get(f"{cut}|{i}")
+        if not c:
+            return "", ""
+        one, two, three = c[0], c[1], c[2]
+        # 一档已经够好（>=85%）就买一档；否则两档；两档还不到 70% 就提三档
+        if one >= 0.85:
+            return f"{shown}", f"{one:.0%}"
+        if two >= 0.70 or three - two < 0.10:
+            return f"{shown},{shown+1}", f"{two:.0%}"
+        return f"{shown},{shown+1}｜或 ±1 三档", f"{two:.0%}｜{three:.0%}"
+
     # 「已见顶」判别器（<model>.settled.pkl）。判定天已过完就把预报改成
     # 已达值 —— 见 train_nowcast.fit_settled。只在 10-14 时有，9/15 时没有。
     # 缺文件/缺 sklearn 自动跳过，不报错。
@@ -523,6 +553,7 @@ def main() -> int:
     names, med = spec["names"], spec["median"]
     warned_p90 = False
     rows_out = []
+    _advice = []
     # 每个站用的是哪个实况源、最新一条是几点。**只是标识，不改任何预报值。**
     # 起因: 滞后 1-2 小时的实况会让模型抓不住当下的升温趋势，而 morning() 的
     # 硬防护只挡 >2 小时（train_nowcast.py 的 `max(o) < cutoff - 2`），
@@ -688,6 +719,19 @@ def main() -> int:
         print(f"  {stn} {N.NAMES.get(stn,''):<9}{shown:>7}{pc}{msf:>7.0f}"
               f"{rise:>+10.1f}{ehs}{conf:>7}{agr:>7}{_otag}   {note}")
         rows_out.append((stn, shown, msf, rise))
+        _adv, _cov = _bucket_advice(cutoff, rise, shown)
+        if _adv:
+            _advice.append((stn, _adv, _cov, rise))
+
+    if _advice:
+        print(f"\n── 档位配置建议（盘口分档时用；**不改上面的预报值**）")
+        print(f"  {'站点':<14}{'买哪几档':<18}{'历史覆盖':<12}备注")
+        for stn, adv, cov, rise in _advice:
+            note = ("已定，一档足够" if "," not in adv else
+                    ("剩余升幅大，可考虑三档" if "三档" in adv else "误差偏低，第二档往上买"))
+            print(f"  {stn} {N.NAMES.get(stn,''):<9}{adv:<18}{cov:<12}{note}")
+        print(f"  依据: 12 时实测 只买点预报 47-48%，买「点预报+上一档」71-73%，"
+              f"±1 三档 90%。第二档往上买比往下买多 7 个百分点。")
 
     if stale:
         print(f"\n[warn] 实况滞后（截止 {cutoff} 时，标 ! 的站）:", file=sys.stderr)

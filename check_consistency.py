@@ -467,6 +467,9 @@ def check_contracts(args):
     rep(os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                     "exceed_table.json")),
       "exceed_table.json 在（「更高?」列的数据源）")
+    rep(os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "bucket_table.json")),
+      "bucket_table.json 在（档位配置建议的数据源）")
 
     # 「一致?」列的对照模型必须在，否则那一列静默变空。同时它必须**不含**
     # AIFS —— 两个模型一样的话一致性就恒为「一致」，这一列就废了。
