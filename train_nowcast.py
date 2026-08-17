@@ -190,6 +190,103 @@ REGIME_FEATS = ["sofar_minus_now", "sofar_hour", "sofar_is_night",
 if os.environ.get("PLOYGON_REGIME") == "1":
     FEATS += REGIME_FEATS
 
+# 观测量化的去除（A/B 测试中，PLOYGON_DQ=1 打开）。
+# 起因: 2026-08-16 查 obs 表发现温度**全部是整数**（非整数占比 0.0%，10 站
+# 全部）—— 中国民航 METAR 是国际格式，没有美制 remarks 段那个十分位组
+# `T0261 0178`（0/3814 条含该组）。所以 max_so_far 是「取整后的最大值」，
+# 每个输入都带 ±0.5 的量化噪声。
+#
+# 这对**整数命中**是致命的，因为同一个报值对应的跳档概率天差地别:
+#   真值 31.6 -> 报 32，要涨到 32.5 才跳 33，还差 0.9 度
+#   真值 32.4 -> 报 32，要涨到 32.5 才跳 33，只差 0.1 度
+# 模型看到的都是 32，分不开这两天。
+#
+# 但上午十几个报文虽各自 ±0.5，温度曲线是光滑的 —— 拟合能把真值反推回来。
+# 实测区分力（12 时，模型判涨 <1.25 度的 2516 站日，按 dq_slack 四分位）:
+#   离整数边界 0.67 度以上 -> 实际 +0 度占 69%
+#   离整数边界 0.34 度以下 -> 实际 +0 度占 33%     差 36 个百分点
+# 13 时同组 72% vs 42%。这正好是 +0/+1 那个分叉。
+DQ_FEATS = ["dq_max", "dq_slack", "dq_pos", "dq_now", "dq_slope", "dq_resid"]
+if os.environ.get("PLOYGON_DQ") == "1":
+    FEATS += DQ_FEATS
+
+
+def dequant(o, cutoff):
+    """由取整的逐小时温度反推光滑曲线，返回去量化的派生量。
+
+    两个窗口各拟合一次（全上午三次 / 末段 6 小时二次），取包络最大值当去量化的
+    max_so_far。**每个窗口的点数都必须明显多于参数个数**，否则是插值不是平滑，
+    量化噪声原样留在拟合值里 —— 一开始用的末段 3 小时二次（4 点 3 参）就是这个
+    毛病，dq_resid 恒等于 0。
+
+    **不用半点报**: o 已按小时聚合（同小时取较高的那条），与日最高温口径一致。
+    """
+    v = sorted((h, d["t"]) for h, d in o.items())
+    if len(v) < 6:
+        return {k: None for k in DQ_FEATS}
+    ts = [p[0] for p in v]
+    xs = [p[1] for p in v]
+    best, slope, now = None, None, None
+    for lo, deg in ((max(4, cutoff - 9), 3), (cutoff - 6, 2)):
+        idx = [i for i, t in enumerate(ts) if t >= lo]
+        if len(idx) < deg + 4:                     # 点数 >= 参数 +3，保证是平滑
+            continue
+        try:
+            cf = _polyfit([ts[i] for i in idx], [xs[i] for i in idx], deg)
+        except (ValueError, ZeroDivisionError):
+            continue
+        t0, t1 = ts[idx[0]], ts[idx[-1]]
+        top = max(_polyval(cf, t0 + (t1 - t0) * k / 119.0) for k in range(120))
+        if best is None or top > best:
+            best = top
+        if deg == 2:                               # 末段窗口给瞬时量
+            now = _polyval(cf, t1)
+            slope = _polyval([cf[0] * 2, cf[1]], t1)
+    if best is None:
+        return {k: None for k in DQ_FEATS}
+    msf = max(xs)
+    return {"dq_max": best,
+            # 离下一个整数边界还差多少度。**这是核心项**
+            "dq_slack": round(msf) + 0.5 - best,
+            "dq_pos": best - math.floor(best) - 0.5,
+            "dq_now": now, "dq_slope": slope,
+            "dq_resid": best - msf}
+
+
+def _polyfit(xs, ys, deg):
+    """最小二乘多项式拟合，返回高次在前的系数。正规方程 + 高斯消元。"""
+    n = deg + 1
+    x0 = sum(xs) / len(xs)                 # 中心化，避免 x^6 量级导致病态
+    xc = [x - x0 for x in xs]
+    pw = [sum(x ** k for x in xc) for k in range(2 * deg + 1)]
+    A = [[pw[i + j] for j in range(n)] + [sum(y * x ** i for x, y in zip(xc, ys))]
+         for i in range(n)]
+    for i in range(n):
+        p = max(range(i, n), key=lambda r: abs(A[r][i]))
+        if abs(A[p][i]) < 1e-12:
+            raise ValueError("singular")
+        A[i], A[p] = A[p], A[i]
+        for r in range(n):
+            if r == i:
+                continue
+            f = A[r][i] / A[i][i]
+            for cix in range(i, n + 1):
+                A[r][cix] -= f * A[i][cix]
+    c = [A[i][n] / A[i][i] for i in range(n)]          # 低次在前，且是 (x-x0) 的
+    # 展开回原变量: sum c_k (x-x0)^k
+    out = [0.0] * n
+    for k in range(n):
+        for j in range(k + 1):
+            out[j] += c[k] * math.comb(k, j) * (-x0) ** (k - j)
+    return out[::-1]                                    # 高次在前
+
+
+def _polyval(cf, x):
+    r = 0.0
+    for c in cf:
+        r = r * x + c
+    return r
+
 # 站点身份（A/B 测试中，PLOYGON_STNID=1 打开）。
 # 起因: 2026-08-07 分站算「16 时后见顶」的判别 AUC，发现各站机制完全不同 ——
 #   上海 风速 0.79 / 上午升温 0.18   青岛 风速 0.72 / 云量 0.72 / 升温 0.25
@@ -553,6 +650,7 @@ def build_feats(o, cutoff, prev, clim_r, clim_p, doy, nwp):
     f["mosd_minus_sofar"] = None if mp is None else mp - msf
     f["mosd_minus_nwp"] = (None if (mp is None or f["nwp_tmax"] is None)
                            else mp - f["nwp_tmax"])
+    f.update(dequant(o, cutoff))
     return f, msf
 
 

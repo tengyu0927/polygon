@@ -651,18 +651,42 @@ def main() -> int:
                 else:
                     p90_r = N.rise_quantile(pmf, 0.90) if pmf else mean_r
                 # 已见顶覆盖: 判定为「天已过完」就直接报已达值（见 fit_settled）
-                if m.get("settled") is not None:
-                    Xs, _ = N.matrix(sub, m["median"], names)
+                # 判别概率也要落盘: 扫「多大把握才该覆盖」这个阈值时，若另写
+                # 诊断脚本重算，两端特征就会对不上（这类静默错配已犯过四次）。
+                ps = [None] * len(sub)
+                pre_r = list(mean_r)          # 覆盖前的连续升幅，扫阈值要用
+                # 判别器**一律用合并模型的**，与生产一致 ——
+                # train_nowcast.py 只训一个 `SETTLED_STORE[cutoff] =
+                # fit_settled(tr+va, …)`，全部站共用。
+                #
+                # 2026-08-16 修: 这里原先取分站模型的判别器，而 fit_settled 要求
+                # 正负各 >=100，分站训练集在早时次凑不够「已见顶」正例就返回 None，
+                # 那个站整段没有覆盖。实测覆盖率只有 10 时 17.3% / 11 时 34.4% /
+                # 12 时 75.6% / 13 时 89.4% / 14 时 69.4%，**回测一直在低估生产**:
+                #   时次      10      11      12      13      14
+                #   低估   +0.67  +0.58  +0.95  +0.80  +0.40 pt
+                #   P      99.8%  97.7%  99.5%  96.0%  86.2%
+                # 「分站有就用分站、没有才用合并」也试过，与一律用合并无稳定差异
+                # （五个时次 P=6.6%~76.4%，方向不一致）—— 要紧的只是覆盖完整。
+                # PLOYGON_SETTLED_PERSTN=1 可切回旧的分站行为（只为复现历史数字）。
+                if os.environ.get("PLOYGON_SETTLED_PERSTN") == "1":
+                    sm, smed = m.get("settled"), m.get("median")
+                else:
+                    sm, smed = pooled.get("settled"), pooled.get("median")
+                if sm is not None:
+                    Xs, _ = N.matrix(sub, smed, names)
                     import numpy as _np
-                    ps = m["settled"].predict_proba(_np.asarray(Xs, float))[:, 1]
+                    ps = list(sm.predict_proba(_np.asarray(Xs, float))[:, 1])
                     mean_r = [0.0 if p >= N.SETTLED_TH else v
                               for p, v in zip(ps, mean_r)]
 
-                for r, rm, rk, rw, rq in zip(sub, mean_r, mode_r, win_r, p90_r):
+                for r, rm, rk, rw, rq, pv, r0 in zip(sub, mean_r, mode_r, win_r,
+                                                     p90_r, ps, pre_r):
                     res[(stn, cutoff)].append(
                         (r["date"], r["so_far"] + rm, r["tmax"], r["so_far"],
                          r["so_far"] + rk, r["so_far"] + rw,
-                         r["so_far"] + max(rq, rm)))   # P90 不得低于点预报
+                         r["so_far"] + max(rq, rm),    # P90 不得低于点预报
+                         pv, r["so_far"] + r0))
 
     if miss_nwp:
         print(f"[warn] 评估期有 {miss_nwp} 个站日缺 GFS 特征（mos.csv 未覆盖到），"
@@ -779,15 +803,17 @@ def main() -> int:
             w.writerow(["station", "date", "cutoff", "pred_mean", "pred_mode",
                         "pred_win", "actual", "so_far",
                         "w1_mean", "w1_mode", "w1_win", "hit_win", "pred_p90",
-                        "pred_raw"])
+                        "pred_raw", "settled_p", "pred_pre"])
             for (stn, c), v in sorted(res.items()):
-                for d, p, a, sf, pk, pw, pq in v:
+                for d, p, a, sf, pk, pw, pq, pv, p0 in v:
                     w.writerow([stn, d, c, round(p), round(pk), round(pw), a, sf,
                                 int(abs(round(p) - a) <= 1),
                                 int(abs(round(pk) - a) <= 1),
                                 int(abs(round(pw) - a) <= 1),
                                 int(round(pw) == round(a)), round(pq),
-                                round(p, 4)])
+                                round(p, 4),
+                                "" if pv is None else round(pv, 4),
+                                round(p0, 4)])
         print(f"\n逐日结果已写 {args.csv_out}")
     return 0
 

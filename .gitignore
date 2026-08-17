@@ -48,11 +48,20 @@ ens.sqlite
 # gfs18_8stn.csv.keep (97MB) 一起提交了，推送被 GitHub 的 100MB 硬限制拒掉。
 # *.sqlite 那条规则挡不住带后缀的备份名。
 *.bak-*
+# 2026-08-16: 上面那条用的是连字符，挡不住 `nowcast_nwp.json.bak_20260816_2206`
+# 这种下划线加时间戳的备份名（11MB，两个文件）。
+*.bak_*
 *.keep
 *.orig
 gfs18*.csv
 gfs18*.csv.gz
 bt_*.csv
+# A/B 复查产物，与 bt_*.csv 同类
+rt_*.csv
+# 分时次训练的中间 JSON，内容合并进 nowcast_nwp.json 后即无用
+nc_*.json
+nc_*.json.gbm.pkl
+nc_*.json.settled.pkl
 *.keep
 mos_roll.csv
 sonde/
