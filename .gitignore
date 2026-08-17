@@ -56,8 +56,10 @@ ens.sqlite
 gfs18*.csv
 gfs18*.csv.gz
 bt_*.csv
-# A/B 复查产物，与 bt_*.csv 同类
-rt_*.csv
+# A/B 复查产物，与 bt_*.csv 同类。2026-08-18: 原来只写了 rt_*.csv，
+# 挡不住 rt15_/rs9_/rsA_ 这些没有下划线分隔的命名。
+rt*.csv
+rs*.csv
 # 分时次训练的中间 JSON，内容合并进 nowcast_nwp.json 后即无用
 nc_*.json
 nc_*.json.gbm.pkl
@@ -72,3 +74,7 @@ shadow_*.log
 *.pre_aifs
 m15_feat.csv
 hourly_pm.csv
+
+# 9 时预报历史（近期偏差订正的数据源），各机器独立累积
+nowcast_hist.json
+resid_feat.csv

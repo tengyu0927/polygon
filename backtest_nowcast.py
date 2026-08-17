@@ -422,6 +422,8 @@ def main() -> int:
     ap.add_argument("--q15", default="", help="m15_feat.csv（15 分钟形状特征）")
     ap.add_argument("--pm", default="", help="hourly_pm.csv（午后演变+轮次漂移）")
     ap.add_argument("--sonde", default="", help="sonde.py --build 出的探空特征表")
+    ap.add_argument("--resid", default="",
+                    help="resid_feat.py 出的「自身近期残差」表（按站×日×时次）")
     ap.add_argument("--mos-oos", default="",
                     help="train_mos --pred 导出的样本外 D+1 预报 CSV")
     ap.add_argument("--csv-out", default="", help="把逐日结果写 CSV")
@@ -463,6 +465,19 @@ def main() -> int:
                     nwp_map[k]["__" + c] = float(v)
             n_q += 1
         print(f"  15 分钟形状覆盖 {n_q} 站日", file=sys.stderr)
+
+    # 自身近期残差（按站 × 日 × 时次）
+    resid_map = {}
+    if args.resid:
+        if not os.path.exists(args.resid):
+            print(f"[error] --resid 指了 {args.resid}，但文件不存在", file=sys.stderr)
+            return 2
+        for r in csv.DictReader(open(args.resid, encoding="utf-8")):
+            g = {c: float(v) for c, v in r.items()
+                 if c in N.RESID_FEATS and v not in (None, "")}
+            if g:
+                resid_map[(r["station"], r["date"], int(r["cutoff"]))] = g
+        print(f"  自身残差覆盖 {len(resid_map)} 站日×时次", file=sys.stderr)
 
     # 午后逐小时演变 + 轮次漂移
     if args.pm and os.path.exists(args.pm):
@@ -583,6 +598,14 @@ def main() -> int:
             rows = N.make_samples(days, cutoff, clim_r.get(cutoff, {}),
                                   clim_p, nwp_map, 0)
             rows = [r for r in rows if r["f"]["clim_rise"] is not None]
+            # 「我自己最近几天报偏了多少」。**必须按时次注入** —— 残差表按
+            # (站, 日, 时次) 三键，而 nwp_map 只有 (站, 日) 两键，混用就会把
+            # 9 时的残差喂给 12 时的模型。
+            if resid_map:
+                for r in rows:
+                    g = resid_map.get((r["stn"], r["date"], cutoff)) or {}
+                    for k in N.RESID_FEATS:
+                        r["f"][k] = g.get(k)
             if m2_maps:
                 for r in rows:
                     t1 = r["f"].get("nwp_tmax")

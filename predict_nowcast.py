@@ -553,6 +553,71 @@ def main() -> int:
             return f"{shown},{shown+1}", f"{two:.0%}"
         return f"{shown},{shown+1}｜或 ±1 三档", f"{two:.0%}｜{three:.0%}"
 
+    # 自身近期偏差订正。**只在 9 时。**
+    #
+    # 2026-08-17 量到临近模型自己的签名残差有时间持续性，越早的时次越强
+    # （前 5 天平均残差 vs 今天残差）: 9 时 0.275 / 10 时 0.139 / 12 时 0.117 /
+    # 15 时 0.037。物理上讲得通 —— 实况信息越少越依赖模式，模式的系统偏差
+    # 就越持续。
+    #
+    # **双向验证**（一半定参数、另一半验，标准窗口）:
+    #   前半定→后半验  k=30 α=0.4  35.72% -> 36.67%  +0.95pt  P=91.0%
+    #   后半定→前半验  k=5  α=0.4  34.38% -> 35.33%  +0.95pt  P=89.2%
+    # 两个方向效果量完全一致，但都过不了 95%。真正的证据是**不敏感**:
+    # α=0.4 固定时 k 从 3 到 30 全部两半为正（+0.82%~+1.86%），k=14 固定时
+    # α 从 0.2 到 0.6 全部两半为正。取 k=10 / α=0.4 —— 两个平台的中间，
+    # 不取 k=7 那个 +1.74% 的峰值。
+    #
+    # **试过更好看的做法，都更差**（同一批数据、同样双向验证）:
+    #   做成特征喂模型 9 时 -0.38% / 10 时 -1.22% / 11 时 -1.37%
+    #     —— 信号只有 r=0.28，而模型已有 130 项特征，再塞 4 个弱特征，
+    #        学到的噪声比信号多。硬减是把结构先验地强加进去，模型学不到但我们知道对。
+    #   分站各调 k,α   9 时 +0.6% vs 全站统一 +1.0%（每站 230 天撑不起两个参数）
+    #   只在偏差大/同号时才订正   越挑越差（挑中的是噪声被吹大的日子）
+    #   10/11/12 时   +0.52%(不稳) / 反号 / 负
+    RESID_CUTOFF, RESID_K, RESID_ALPHA = 9, 10, 0.4
+    _HIST_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "nowcast_hist.json")
+
+    def _recent_bias(stn):
+        """该站前 RESID_K 个可用日的平均残差（未取整预报 − 取整实况）。
+
+        **与训练端同口径** —— resid_feat.py 用的就是 `pred_raw - round(actual)`。
+        历史预报从 nowcast_hist.json 取（本文件每轮写），实况从库里取。
+        样本不足一半就返回 None（宁可不订正）。
+        """
+        if cutoff != RESID_CUTOFF or not _hist:
+            return None
+        got = []
+        for d in sorted(_hist, reverse=True):
+            if d >= tgt.isoformat():
+                continue
+            p = _hist[d].get(stn)
+            a = _past_max.get((stn, d))
+            if p is None or a is None:
+                continue
+            got.append(p - round(a))
+            if len(got) >= RESID_K:
+                break
+        return sum(got) / len(got) if len(got) >= max(2, RESID_K // 2) else None
+
+    _hist, _past_max = {}, {}
+    if cutoff == RESID_CUTOFF:
+        try:
+            if os.path.exists(_HIST_PATH):
+                _hist = json.load(open(_HIST_PATH, encoding="utf-8"))
+        except Exception:                              # noqa: BLE001
+            _hist = {}
+        if _hist:
+            import sqlite3 as _sq3
+            _c3 = _sq3.connect(args.db)
+            for _s, _d, _t in _c3.execute(
+                    "SELECT station, local_date, MAX(temp_c) FROM obs "
+                    "WHERE local_date >= ? AND local_date < ? AND temp_c IS NOT NULL "
+                    "GROUP BY 1,2", (min(_hist), tgt.isoformat())):
+                _past_max[(_s, _d)] = _t
+            _c3.close()
+
     # 「已见顶」判别器（<model>.settled.pkl）。判定天已过完就把预报改成
     # 已达值 —— 见 train_nowcast.fit_settled。只在 10-14 时有，9/15 时没有。
     # 缺文件/缺 sklearn 自动跳过，不报错。
@@ -596,6 +661,7 @@ def main() -> int:
     names, med = spec["names"], spec["median"]
     warned_p90 = False
     rows_out = []
+    _raw_today, _shadow = {}, []       # 9 时: 订正前的值 / 被订正改掉的站
     _advice = []
     _edges = []
     # 每个站用的是哪个实况源、最新一条是几点。**只是标识，不改任何预报值。**
@@ -687,6 +753,11 @@ def main() -> int:
             if float(_SETTLED.predict_proba(_NP.asarray(Xs, float))[0][1]) >= N.SETTLED_TH:
                 rise, tag = 0.0, tag + "|已见顶"
         fin = msf + rise
+        fin_raw = fin                                  # 影子对照用: 订正前的值
+        b = _recent_bias(stn)
+        if b is not None:
+            fin -= RESID_ALPHA * b
+            tag += f"|近期偏差{-RESID_ALPHA * b:+.2f}"
 
         p90 = None
         if args.p90:
@@ -763,6 +834,10 @@ def main() -> int:
         print(f"  {stn} {N.NAMES.get(stn,''):<9}{shown:>7}{pc}{msf:>7.0f}"
               f"{rise:>+10.1f}{ehs}{conf:>7}{agr:>7}{_otag}   {note}")
         rows_out.append((stn, shown, msf, rise))
+        if cutoff == RESID_CUTOFF:
+            _raw_today[stn] = round(fin_raw, 4)        # **订正前**的值，见落盘处
+            if b is not None and round(fin_raw) != shown:
+                _shadow.append((stn, round(fin_raw), shown))
         _e = _edge(stn, rise, shown)
         if _e and _e[4] >= 0.25:
             _edges.append((stn, shown, _e))
@@ -797,6 +872,15 @@ def main() -> int:
         print(f"       滞后 >2 小时的站会被 morning() 挡掉出 --，1-2 小时照报，"
               f"抓不住当下升温趋势", file=sys.stderr)
 
+    if _shadow:
+        print(f"\n── 近期偏差订正改掉的站（前 {RESID_K} 天平均残差 × {RESID_ALPHA}）")
+        print(f"  {'站点':<16}{'订正前':>8}{'订正后':>8}")
+        for _s, _a, _b2 in _shadow:
+            print(f"  {_s} {N.NAMES.get(_s, '')[:6]:<10}{_a:>8}{_b2:>8}")
+        print(f"  依据: 双向验证各 +0.95pt（P=91.0%/89.2%），"
+              f"k 从 3 到 30、α 从 0.2 到 0.6 两半全部为正。**只在 9 时**，"
+              f"10-15 时实测不稳或为负。")
+
     if args.compare and os.path.exists(args.compare):
         print(f"\n（另见 {args.compare} 的 D+1 结果，可并排比较）")
     try:
@@ -804,6 +888,22 @@ def main() -> int:
                   open(_st_path, "w", encoding="utf-8"), ensure_ascii=False)
     except Exception as e:                            # noqa: BLE001
         print(f"[warn] 迟滞状态没写成 ({e})，下一轮会退回普通四舍五入", file=sys.stderr)
+
+    # 9 时**订正前**的未取整预报值落盘，供后续日子算近期残差。
+    # 存订正前的值 —— 否则订正会自我叠加（今天减了，明天算残差时又把减过的
+    # 值当预报，等于连着减两次）。只保留最近 90 天。
+    if cutoff == RESID_CUTOFF and _raw_today:
+        try:
+            _h = {}
+            if os.path.exists(_HIST_PATH):
+                _h = json.load(open(_HIST_PATH, encoding="utf-8"))
+            _h[tgt.isoformat()] = {**_h.get(tgt.isoformat(), {}), **_raw_today}
+            for _d in sorted(_h)[:-90]:
+                _h.pop(_d, None)
+            json.dump(_h, open(_HIST_PATH, "w", encoding="utf-8"), ensure_ascii=False)
+        except Exception as e:                        # noqa: BLE001
+            print(f"[warn] 9 时预报历史没写成 ({e})，近期偏差订正下轮会跳过",
+                  file=sys.stderr)
 
     if any(r[3] < 0.5 for r in rows_out):
         print("\n「更高?」= 有多大概率比报出去的这个数**更高**。"

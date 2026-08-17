@@ -210,6 +210,21 @@ DQ_FEATS = ["dq_max", "dq_slack", "dq_pos", "dq_now", "dq_slope", "dq_resid"]
 if os.environ.get("PLOYGON_DQ") == "1":
     FEATS += DQ_FEATS
 
+# 「我自己最近几天报偏了多少」（A/B 测试中，PLOYGON_RESID=1 打开）。
+# 表由 resid_feat.py 从滚动样本外回测序列生成，见那个文件顶部的说明。
+#
+# 起因: 2026-08-17 量到临近模型自己的签名残差有时间持续性，越早的时次越强
+# （前 5 天平均残差 vs 今天残差）: 9 时 0.275 / 10 时 0.139 / 12 时 0.117 /
+# 15 时 0.037。模型有 rise_anom_3d/7d（最近实际升幅相对气候的异常 = 天气漂移），
+# 但没有「我自己的残差」（= 模型在当前天气型下的失准），是两回事。
+#
+# 直接硬减（pred - α·近期残差）已经测过: 9 时 +0.95pt/P=91.1%、10 时
+# +0.52pt/P=80.4%、11/12 时为负。差一口气，且它每天按同一比例订正，学不会
+# 「什么时候这个偏差成立」。做成特征才能让模型跟云量/风速/剩余升幅一起判断。
+RESID_FEATS = ["rs_bias_3d", "rs_bias_7d", "rs_bias_20d", "rs_sign_7d"]
+if os.environ.get("PLOYGON_RESID") == "1":
+    FEATS += RESID_FEATS
+
 
 def dequant(o, cutoff):
     """由取整的逐小时温度反推光滑曲线，返回去量化的派生量。
@@ -642,6 +657,8 @@ def build_feats(o, cutoff, prev, clim_r, clim_p, doy, nwp):
         f[k] = g.get("__" + k)
     for k in ("sd_th925", "sd_th850", "sd_th_inv", "sd_inv_dt", "sd_inv_dp",
               "sd_lapse_p", "sd_dpd_low", "sd_t850", "sd_t700"):
+        f[k] = g.get("__" + k)
+    for k in RESID_FEATS:
         f[k] = g.get("__" + k)
     f["sd_th850_minus_sofar"] = (None if f["sd_th850"] is None
                                  else f["sd_th850"] - msf)

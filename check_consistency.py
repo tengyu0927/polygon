@@ -470,6 +470,31 @@ def check_contracts(args):
     rep(os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                     "bucket_table.json")),
       "bucket_table.json 在（档位配置建议的数据源）")
+
+    # 9 时的自身近期偏差订正要靠 nowcast_hist.json 存历史预报值。文件丢了、
+    # 或天数不够 K//2，订正会静默跳过 —— 不报错，只是那 +0.95pt 悄悄没了。
+    # 这一项就是防这个。
+    _hp = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       "nowcast_hist.json")
+    if os.path.exists(_hp):
+        try:
+            _h = json.load(open(_hp, encoding="utf-8"))
+        except Exception:                              # noqa: BLE001
+            _h = {}
+        import stations as _ST3
+        _ds = sorted(_h)
+        rep(len(_ds) >= 5, "nowcast_hist.json 天数够 9 时偏差订正用",
+            f"{len(_ds)} 天（<5 天则订正跳过）")
+        _age = ((datetime.now().date() - datetime.strptime(_ds[-1], "%Y-%m-%d").date()).days
+                if _ds else 999)
+        rep(_age <= 2, "nowcast_hist.json 是新的",
+            f"最后一天 {_ds[-1] if _ds else '-'}，距今 {_age} 天")
+        _nst = len(_h[_ds[-1]]) if _ds else 0
+        rep(_nst == len(_ST3.ICAOS), "最近一天的历史含全部站",
+            f"{_nst}/{len(_ST3.ICAOS)}")
+    else:
+        rep(False, "nowcast_hist.json 在（9 时近期偏差订正的数据源）",
+            "缺文件 -> 订正静默跳过")
     # 高优势清单要两样: edge_table.json + 生产每天生成的 pred_mos.csv。
     # pred_mos.csv 若陈旧（不含今天），清单会静默变空 —— 那正是最该有提示的时候。
     _et = os.path.join(os.path.dirname(os.path.abspath(__file__)), "edge_table.json")
