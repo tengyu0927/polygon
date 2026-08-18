@@ -78,3 +78,5 @@ hourly_pm.csv
 # 9 时预报历史（近期偏差订正的数据源），各机器独立累积
 nowcast_hist.json
 resid_feat.csv
+
+# 见顶时刻判别器（由 --peak-only 生成，跟主模型走）

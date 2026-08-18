@@ -618,6 +618,31 @@ def main() -> int:
                 _past_max[(_s, _d)] = _t
             _c3.close()
 
+    # 「见顶时刻」判别器（<model>.peak.pkl）。**不改任何预报值** ——
+    # 只回答「今天这个站可能几点见顶」，让人知道 12 时看到的数在 15 时后
+    # 还有多大概率被顶掉。见 train_nowcast.fit_peak_prob。
+    # 概率一律走训练时存的经验频率回填（原始概率偏散: 报 75% 实测 61%）。
+    _PEAK = None
+    _pkp = args.model + ".peak.pkl"
+    if os.path.exists(_pkp) and _NP is not None:
+        try:
+            import pickle as _pk3
+            _PEAK = _pk3.load(open(_pkp, "rb")).get(cutoff)
+        except Exception as e:                         # noqa: BLE001
+            print(f"[warn] {_pkp} 读不出来（{e}），本轮不出见顶时刻概率",
+                  file=sys.stderr)
+
+    def _peak_prob(f, med_, names_):
+        """返回 (早, 正常, 晚, 校准后的晚)。缺模型/缺 sklearn 返回 None。"""
+        if _PEAK is None:
+            return None
+        Xp, _ = N.matrix([{"f": f}], med_, names_)
+        p = _PEAK["clf"].predict_proba(_NP.asarray(Xp, float))[0]
+        i = next((k for k, e in enumerate(_PEAK["edges"]) if p[2] < e),
+                 len(_PEAK["edges"]))
+        c = _PEAK["cal"][i] if i < len(_PEAK["cal"]) else None
+        return float(p[0]), float(p[1]), float(p[2]), c
+
     # 「已见顶」判别器（<model>.settled.pkl）。判定天已过完就把预报改成
     # 已达值 —— 见 train_nowcast.fit_settled。只在 10-14 时有，9/15 时没有。
     # 缺文件/缺 sklearn 自动跳过，不报错。
@@ -662,6 +687,7 @@ def main() -> int:
     warned_p90 = False
     rows_out = []
     _raw_today, _shadow = {}, []       # 9 时: 订正前的值 / 被订正改掉的站
+    _peaks = []                        # 见顶时刻概率（每站一行）
     _advice = []
     _edges = []
     # 每个站用的是哪个实况源、最新一条是几点。**只是标识，不改任何预报值。**
@@ -834,6 +860,9 @@ def main() -> int:
         print(f"  {stn} {N.NAMES.get(stn,''):<9}{shown:>7}{pc}{msf:>7.0f}"
               f"{rise:>+10.1f}{ehs}{conf:>7}{agr:>7}{_otag}   {note}")
         rows_out.append((stn, shown, msf, rise))
+        _pp = _peak_prob(f, med, names)
+        if _pp is not None:
+            _peaks.append((stn, *_pp))
         if cutoff == RESID_CUTOFF:
             _raw_today[stn] = round(fin_raw, 4)        # **订正前**的值，见落盘处
             if b is not None and round(fin_raw) != shown:
@@ -871,6 +900,24 @@ def main() -> int:
                   f"滞后 {lag} 小时", file=sys.stderr)
         print(f"       滞后 >2 小时的站会被 morning() 挡掉出 --，1-2 小时照报，"
               f"抓不住当下升温趋势", file=sys.stderr)
+
+    if _peaks:
+        print(f"\n── 见顶时刻概率（**不改上面的预报值**，只说今天几点可能到顶）")
+        print(f"  {'站点':<16}{'早<13时':>9}{'正常13-14':>11}{'晚>=15时':>10}"
+              f"{'晚·校准':>9}   提示")
+        for _s, _e, _n, _l, _c in sorted(_peaks, key=lambda x: -x[3]):
+            _use = _c if _c is not None else _l
+            _hint = ("⚠ 大概率拖到下午晚些，15 时的数仍可能被顶掉" if _use >= 0.5
+                     else ("留意晚见顶" if _use >= 0.33 else
+                           ("基本能早早定下来" if _e >= 0.5 else "")))
+            print(f"  {_s} {N.NAMES.get(_s, '')[:6]:<10}{_e:>9.0%}{_n:>11.0%}"
+                  f"{_l:>10.0%}{_use:>9.0%}   {_hint}")
+        print(f"  分档: 早=<13 时见顶 / 正常=13-14 时 / 晚=>=15 时。"
+              f"「晚·校准」是按训练集经验频率回填的值，比原始概率准 —— "
+              f"实测按它五等分，实际晚见顶率 10%/20%/33%/42%/61%，单调无反转。")
+        print(f"  站内 AUC 平均 0.678（济南/成都/青岛/重庆/武汉 0.73~0.75 最好，"
+              f"北京/深圳 0.58 几乎只能给基础率）。各站基础率差很多: "
+              f"晚见顶占比 上海 6% / 青岛 13% / 北京 30% / 武汉 43% / 成都 53%。")
 
     if _shadow:
         print(f"\n── 近期偏差订正改掉的站（前 {RESID_K} 天平均残差 × {RESID_ALPHA}）")

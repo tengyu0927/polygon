@@ -471,6 +471,33 @@ def check_contracts(args):
                                     "bucket_table.json")),
       "bucket_table.json 在（档位配置建议的数据源）")
 
+    # 「见顶时刻」判别器（<model>.peak.pkl）。它用主模型的 names/median 训，
+    # 主模型一变就必须重训（--peak-only），否则 matrix() 填缺值的基准对不上，
+    # 而且**不会报错**，只是概率悄悄失真。这里校验特征数与主模型一致。
+    _pkp = args.nowcast_model + ".peak.pkl"
+    if os.path.exists(_pkp):
+        try:
+            import pickle as _pk9
+            _pm = _pk9.load(open(_pkp, "rb"))
+        except Exception:                              # noqa: BLE001
+            _pm = {}
+        _spec = json.load(open(args.nowcast_model, encoding="utf-8"))
+        rep(bool(_pm), "peak.pkl 读得出来", f"时次 {sorted(_pm)}")
+        for _c in sorted(_pm):
+            # matrix() 每个特征产两列（值 + 缺失标记），所以是 2×names
+            _n_model = 2 * len(_spec.get(str(_c), {}).get("names", []))
+            _n_clf = int(getattr(_pm[_c]["clf"], "n_features_in_", -1))
+            rep(_n_clf == _n_model, f"{_c} 时见顶判别器特征数与主模型一致",
+                f"判别器 {_n_clf} / 模型 2×{_n_model // 2}={_n_model}"
+                + ("" if _n_clf == _n_model else "  -> 主模型换过，需重跑 --peak-only"))
+            _cal = _pm[_c].get("cal") or []
+            _ok = all(a2 is not None and b2 is not None and a2 <= b2
+                      for a2, b2 in zip(_cal, _cal[1:]))
+            rep(_ok, f"{_c} 时见顶概率校准表单调",
+                str([None if x is None else round(x, 3) for x in _cal]))
+    else:
+        rep(False, "peak.pkl 在（见顶时刻概率的数据源）", "缺文件 -> 该段不输出")
+
     # 9 时的自身近期偏差订正要靠 nowcast_hist.json 存历史预报值。文件丢了、
     # 或天数不够 K//2，订正会静默跳过 —— 不报错，只是那 +0.95pt 悄悄没了。
     # 这一项就是防这个。

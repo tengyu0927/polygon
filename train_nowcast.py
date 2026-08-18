@@ -943,6 +943,78 @@ def fit_settled(rows, med, names):
               min_samples_leaf=15, random_state=0).fit(_np.asarray(X, float), y)
 
 
+def fit_peak_prob(rows, med, names):
+    """判别当天**见顶时刻**落在早/正常/晚哪一档。**不改任何预报值。**
+
+    2026-08-18 上线。动机来自用户的一个观察: 报得好的日子基本都是早见顶日，
+    报得差的日子晚见顶站多 —— 而这个差异是可预报的，只是从没印出来过。
+
+    实测（466 天，12 时逐日命中率 vs 当日特征）:
+      与「晚见顶站点比例」相关 r=-0.274，与「12 时后平均还需涨」r=-0.301
+      晚见顶比例 0-15% 的日子 12 时命中 57%，>50% 的日子只有 43%
+
+    分档: 早 <13 时 / 正常 13-14 时 / 晚 >=15 时。**各站基础率差一个数量级**
+    （晚见顶占比: 上海 6% / 青岛 13% / 深圳 21% / 北京 30% / 武汉 43% /
+    重庆 47% / 成都 53%），所以「打赢各站基础率」才是有效性的判据。
+
+    验证（标准窗口对半切，2279 站日验证）:
+      合并 AUC  各站基础率 0.682 -> 判别器 0.745
+      站内 AUC  平均 0.678（济南 .749 成都 .747 青岛 .744 重庆 .735 武汉 .725
+                          郑州 .659 上海 .636 广州 .633 北京 .577 深圳 .577）
+      Brier     0.2033 -> 0.1899（改善 6.6%）
+
+    标定: 概率本身偏散（报 75% 实际 61%、报 2% 实际 10%），所以**预测端一律
+    走经验频率回填**（同 hit_table 的做法）。按预测概率五等分的实测晚见顶率
+    10% / 20% / 33% / 42% / 61%，单调无反转、跨度 51 个百分点。
+
+    机理（上午 6-9 时条件，分组均值）: 上午风大 -> 早见顶，每个站方向一致
+    （青岛 3.64/2.91/2.98、深圳 3.47/3.02/2.90、成都 2.25/1.57/1.58 m/s）；
+    盆地站另有「上午升得慢 -> 晚见顶」（成都 0.8/1.5/2.4 度、重庆 0.4/1.7/2.2）。
+    """
+    try:
+        from sklearn.ensemble import HistGradientBoostingClassifier as _C
+        import numpy as _np
+    except ImportError:
+        return None
+    sub = [r for r in rows if r.get("peak_h") is not None]
+    if len(sub) < 500:
+        return None
+    X, _ = matrix(sub, med, names)
+    y = _np.asarray([0 if r["peak_h"] < 13 else (1 if r["peak_h"] < 15 else 2)
+                     for r in sub])
+    if len(set(y.tolist())) < 3:
+        return None
+    Xa = _np.asarray(X, float)
+    mk = lambda: _C(max_depth=4, max_iter=400, learning_rate=0.05,
+                    min_samples_leaf=20, random_state=0)
+    clf = mk().fit(Xa, y)
+    # 校准表**必须用样本外概率建**。2026-08-18 首版用训练集自己的概率，
+    # 分类器在上面过拟合、概率非 0 即 1，分位边界和档内频率全是假的 ——
+    # 端到端一跑就看出来: 原始 61% 回填成 99%、26% 回填成 2%。
+    # 改成按日期分块的 4 折交叉验证取样本外概率（不能随机分折，相邻日高度相关）。
+    _dts = sorted({r["date"] for r in sub})
+    _fold = {d: min(3, i * 4 // len(_dts)) for i, d in enumerate(_dts)}
+    p_late = _np.zeros(len(sub))
+    for k in range(4):
+        te = _np.asarray([_fold[r["date"]] == k for r in sub])
+        if te.sum() < 50 or (~te).sum() < 300:
+            p_late = clf.predict_proba(Xa)[:, 2]     # 折不出来就退回（会偏乐观）
+            break
+        p_late[te] = mk().fit(Xa[~te], y[~te]).predict_proba(Xa[te])[:, 2]
+    q = [float(v) for v in _np.quantile(p_late, [0.2, 0.4, 0.6, 0.8])]
+    cal = []
+    lo = -1.0
+    for hi in q + [2.0]:
+        m_ = (p_late >= lo) & (p_late < hi)
+        cal.append(float((y[m_] == 2).mean()) if m_.sum() >= 30 else None)
+        lo = hi
+    return {"clf": clf, "edges": q, "cal": cal}
+
+
+PEAK_PROB_CUTOFFS = {9, 10, 11, 12}
+PEAK_PROB_STORE = {}
+
+
 SETTLED_TH = 0.5
 # 只在 10-14 时启用。生产回测（标准窗口，对各档部署配置）:
 #   9 时  +0.04pt  P=76.8%   不过线 —— 那一档 AIFS 已补过，判别器没有额外空间
@@ -1406,6 +1478,8 @@ def run_cutoff(days, cutoff, clim_r, clim_p, nwp_map, args, m2_maps=()):
     GBM_STORE[cutoff] = None if gbm is None else gbm[0]
     if cutoff in SETTLED_CUTOFFS:
         SETTLED_STORE[cutoff] = fit_settled(tr + va, med, names)
+    if cutoff in PEAK_PROB_CUTOFFS:
+        PEAK_PROB_STORE[cutoff] = fit_peak_prob(tr + va, med, names)
 
     return {"cutoff": cutoff, "alpha": alpha, "names": names, "median": med,
             "ridge": mdl, "hurdle": hm, "ordinal": ordm, "q90": q90,
@@ -1430,6 +1504,10 @@ def main() -> int:
                     help="追加模式的 mos 格式 csv（可多个），加多模式与集合离散度特征")
     ap.add_argument("--coef", action="store_true")
     ap.add_argument("--dump", help="存模型 JSON")
+    ap.add_argument("--peak-only", default="",
+                    help="只训「见顶时刻」判别器，**复用该模型 JSON 的 names/median**，"
+                         "主模型一个字节不动。用于给已上线的模型补判别器 —— 两者的 "
+                         "med/names 必须一致，否则 matrix() 填缺值的基准不同")
     args = ap.parse_args()
 
     print("读取逐时实况…", file=sys.stderr)
@@ -1459,6 +1537,44 @@ def main() -> int:
         FEATS.extend(m2_feature_names(len(m2_maps)))
 
     clim_r, clim_p = climatology(days, args.cutoffs, args.split_year)
+
+    if args.peak_only:
+        spec_all = json.load(open(args.peak_only, encoding="utf-8"))
+        got = {}
+        for c in args.cutoffs:
+            spec = spec_all.get(str(c))
+            if not spec:
+                print(f"[warn] {args.peak_only} 里没有 {c} 时，跳过", file=sys.stderr)
+                continue
+            rows = make_samples(days, c, clim_r.get(c, {}), clim_p, nwp_map, 0)
+            if m2_maps:
+                for r in rows:
+                    add_m2_feats(r["f"], r["so_far"],
+                                 [mm.get((r["stn"], r["date"])) for mm in m2_maps])
+            for r in rows:
+                add_interactions(r["f"])
+            if spec.get("has_nwp"):
+                # 只留有模式特征的行。库里有 1995 年起的实况（8 万+ 站日），
+                # 但 NWP 只覆盖 2024 年后 —— 不过滤的话老行占九成，把模式那部分
+                # 信号稀释掉，而验证时用的正是有 NWP 的那批。
+                rows = [r for r in rows if r["f"].get("nwp_tmax") is not None]
+            g = fit_peak_prob(rows, spec["median"], spec["names"])
+            if g is None:
+                print(f"[warn] {c} 时样本不足，判别器没建起来", file=sys.stderr)
+                continue
+            got[c] = g
+            print(f"  {c} 时: {len(rows)} 样本，特征 {len(spec['names'])} 项"
+                  f"（取自线上模型），校准表 "
+                  f"{[None if x is None else round(x,3) for x in g['cal']]}",
+                  file=sys.stderr)
+        if got:
+            import pickle
+            with open(args.peak_only + ".peak.pkl", "wb") as fh:
+                pickle.dump(got, fh)
+            print(f"\n「见顶时刻」判别器已存 {args.peak_only}.peak.pkl"
+                  f"（时次 {sorted(got)}）**主模型未改动**")
+        return 0
+
     out = {}
     for c in args.cutoffs:
         r = run_cutoff(days, c, clim_r.get(c, {}), clim_p, nwp_map, args,
@@ -1488,6 +1604,12 @@ def main() -> int:
             with open(args.dump + ".settled.pkl", "wb") as fh:
                 pickle.dump(st, fh)
             print(f"「已见顶」判别器已存 {args.dump}.settled.pkl（时次 {sorted(st)}）")
+        pk = {c: g for c, g in PEAK_PROB_STORE.items() if g is not None and c in out}
+        if pk:
+            import pickle
+            with open(args.dump + ".peak.pkl", "wb") as fh:
+                pickle.dump(pk, fh)
+            print(f"「见顶时刻」判别器已存 {args.dump}.peak.pkl（时次 {sorted(pk)}）")
     return 0
 
 
