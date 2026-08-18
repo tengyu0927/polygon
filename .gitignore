@@ -85,3 +85,8 @@ nowcast_hist.json
 resid_feat.csv
 
 # 见顶时刻判别器（由 --peak-only 生成，跟主模型走）
+
+# 对照模型只用到 .json 和 .gbm.pkl（predict_nowcast 的 --agree-with 只读这两个），
+# 训练顺带产出的判别器边文件用不到，各 4-5MB，不进仓库
+nowcast_nwp_noaifs.json.peak.pkl
+nowcast_nwp_noaifs.json.settled.pkl
