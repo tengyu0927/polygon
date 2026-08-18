@@ -498,6 +498,22 @@ def check_contracts(args):
     else:
         rep(False, "peak.pkl 在（见顶时刻概率的数据源）", "缺文件 -> 该段不输出")
 
+    # 训练用的本地 GFS 时效 vs 生产 pick_run 会选的时效。
+    # 2026-08-18 加: 那天照一段陈旧脚本用 mos_local12 重训了 12 时，而生产喂
+    # lead 6h（两份文件 29.4% 的站日差 >=0.5 度）。原来没有任何机器检查能发现 ——
+    # 逐列比对两端读同一个 CSV，是空对空。
+    _spec2 = json.load(open(args.nowcast_model, encoding="utf-8"))
+    _want_lead = {9: 12, 10: 12, 11: 12, 12: 6, 13: 6, 14: 6}
+    for _c, _wl in sorted(_want_lead.items()):
+        _rec = _spec2.get(str(_c), {}).get("local_gfs_lead")
+        if _rec is None:
+            rep(True, f"{_c} 时训练用的本地 GFS 时效",
+                "未记录（该模型训练时还没这个字段）—— 下次重训自动落盘，暂无法校验")
+        else:
+            rep(_rec == _wl, f"{_c} 时训练时效与生产 pick_run 一致",
+                f"训练 {_rec}h / 生产要 {_wl}h"
+                + ("" if _rec == _wl else "  -> 重训时 --nwp-csv2 用错了 mos_local*.csv"))
+
     # 9 时的自身近期偏差订正要靠 nowcast_hist.json 存历史预报值。文件丢了、
     # 或天数不够 K//2，订正会静默跳过 —— 不报错，只是那 +0.95pt 悄悄没了。
     # 这一项就是防这个。
@@ -638,7 +654,13 @@ def main() -> int:
     ap.add_argument("--mos-csv", default="mos_multi.csv")
     ap.add_argument("--nwp-csv", default="mos.csv")
     # 默认留空，parse 之后按时次补第 7 个成员（本地 GFS）—— 见下面
-    ap.add_argument("--nwp-csv2", nargs="+", default=None)
+    # 默认必须按时次给对文件。2026-08-18 踩过: 默认 None -> 逐列比对时 m2~m7
+    # 两端都是 None，**空对空地「一致」**，于是漏掉了「12 时模型用 mos_local12
+    # 训、生产却喂 lead 6h」这个错配（两份文件 29.4% 的站日差 >=0.5 度）。
+    # 本地 GFS 的时效按时次分: 9-11 时 12h（mos_local12）、12-14 时 6h（mos_local6），
+    # 与下面 want={9:12,10:12,11:12,12:6,13:6,14:6} 那张表是同一件事的两端。
+    ap.add_argument("--nwp-csv2", nargs="+", default=None,
+                    help="不给就按 --cutoff 自动选（9-11 用 mos_local12，12-14 用 mos_local6）")
     ap.add_argument("--extra-models",
                     default="ecmwf_ifs025,cma_grapes_global,icon_global,"
                             "jma_gsm,gem_global")
@@ -648,6 +670,14 @@ def main() -> int:
     ap.add_argument("--skip-scripts", action="store_true",
                     help="跳过入口脚本实跑（那项要联网、约 1 分钟）")
     args = ap.parse_args()
+    if args.nwp_csv2 is None:
+        _lg = "mos_local12.csv" if int(args.cutoff) <= 11 else "mos_local6.csv"
+        args.nwp_csv2 = ["mos_ecmwf.csv", "mos_cma.csv", "mos_icon.csv",
+                         "mos_jma_.csv", "mos_gem_.csv", _lg]
+        if int(args.cutoff) == 9:
+            args.nwp_csv2.append("mos_aifs.csv")      # 9 时的第八成员
+        print(f"  （--nwp-csv2 未给，按 {args.cutoff} 时自动选: "
+              f"{' '.join(args.nwp_csv2)}）", file=sys.stderr)
     if args.nwp_csv2 is None:
         # 第 7 个集合成员（本地 GFS）必须按时次配时效，和训练时一模一样:
         # 9-11 时用前一天 12Z 的 18 小时，12-13 时用当天 00Z 的 6 小时。

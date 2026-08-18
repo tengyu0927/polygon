@@ -1486,6 +1486,14 @@ def run_cutoff(days, cutoff, clim_r, clim_p, nwp_map, args, m2_maps=()):
             "gbm_w": None if gbm is None else gbm[1],
             "per_station": per or None,
             "has_nwp": bool(args.nwp_csv),
+            # 本地 GFS 用的是哪个时效。**必须落盘** —— 2026-08-18 踩过:
+            # 照一段陈旧脚本用 mos_local12 重训了 12 时，而生产喂的是 lead 6h
+            # （两份文件 29.4% 的站日差 >=0.5 度）。JSON 里不记，
+            # check_consistency 就只能空对空，抓不到。
+            "local_gfs_lead": next(
+                (int(m.group(1)) for p in (args.nwp_csv2 or [])
+                 for m in [__import__("re").search(r"mos_local(\d+)\.csv", p)] if m),
+                None),
             "clim_rise": {f"{k[0]}|{k[1]}": v for k, v in clim_r.items()},
             "clim_peak": {f"{k[0]}|{k[1]}": v for k, v in clim_p.items()}}
 
