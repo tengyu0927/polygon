@@ -53,6 +53,11 @@ ens.sqlite
 *.bak_*
 *.keep
 *.orig
+# 2026-08-19: 原来只写 gfs18*，挡不住 gfs00*（00Z 归档，回补完约 140MB，
+# 会撞 GitHub 的 100MB 硬限 —— 本文件上面已经记过一次同类事故）。
+# 用通用模式盖住所有 GFS 原始归档。
+gfs[0-9]*.csv
+gfs[0-9]*.csv.gz
 gfs18*.csv
 gfs18*.csv.gz
 bt_*.csv
