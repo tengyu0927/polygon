@@ -498,6 +498,44 @@ def check_contracts(args):
     else:
         rep(False, "peak.pkl 在（见顶时刻概率的数据源）", "缺文件 -> 该段不输出")
 
+    # 追加模式的训练文件: 站点覆盖必须与 stations.ICAOS 一致，且不能太旧。
+    # 2026-08-18 加: mos_local12/6.csv 停在 08-05/08-01（13-17 天）且只有 8 站
+    # （缺郑州、济南）—— 训练端那两站的 m7 恒为空，生产端 gfs_live 却实时取到
+    # 真值。**逐列比对抓不到**（两端读同一个 CSV，是空对空），run_hourly 的
+    # 实跑也只验「取到了」不验「训练端有没有」。
+    import datetime as _dt2
+    import stations as _ST3
+    _today2 = _dt2.date.today()
+    for _f in ("mos.csv", "mos_ecmwf.csv", "mos_cma.csv", "mos_icon.csv",
+               "mos_jma_.csv", "mos_gem_.csv", "mos_local12.csv",
+               "mos_local6.csv", "mos_aifs.csv"):
+        if not os.path.exists(_f):
+            rep(False, f"{_f} 在")
+            continue
+        _st3, _last3, _days3 = set(), "", set()
+        for _r in csv.DictReader(open(_f, encoding="utf-8")):
+            if _r.get("lead") not in (None, "", "1"):
+                continue
+            _st3.add(_r["station"])
+            _days3.add(_r.get("date", ""))
+            _last3 = max(_last3, _r.get("date", ""))
+        _missing = sorted(set(_ST3.ICAOS) - _st3)
+        rep(not _missing, f"{_f} 覆盖全部 {len(_ST3.ICAOS)} 站",
+            "" if not _missing else f"缺 {_missing} -> 这些站训练端该成员恒为空，"
+                                    f"而生产端会实时取到真值")
+        _lag3 = ((_today2 - _dt2.date.fromisoformat(_last3)).days
+                 if _last3 else 999)
+        # 本地 GFS 靠归档回补，允许旧一些；模式 csv 由 run_daily 每天刷新
+        _tol = 10 if "local" in _f else 3
+        rep(_lag3 <= _tol, f"{_f} 够新", f"最后 {_last3 or '-'}，滞后 {_lag3} 天"
+            + ("" if _lag3 <= _tol else f"（容忍 {_tol} 天）"))
+        # **天数也要查。** 2026-08-19 踩过: 从只回补了 20/870 天的归档重建，
+        # 把 mos_local6.csv 从 845 天覆盖成 20 天 —— 站覆盖满、最后日期也是今天，
+        # 上面两条全绿，这个文件却已经废了。训练样本掉一个数量级不会报错。
+        rep(len(_days3) >= 300, f"{_f} 天数够训练用",
+            f"{len(_days3)} 天"
+            + ("" if len(_days3) >= 300 else " -> 少于 300 天，八成是从半截归档重建的"))
+
     # 训练用的本地 GFS 时效 vs 生产 pick_run 会选的时效。
     # 2026-08-18 加: 那天照一段陈旧脚本用 mos_local12 重训了 12 时，而生产喂
     # lead 6h（两份文件 29.4% 的站日差 >=0.5 度）。原来没有任何机器检查能发现 ——

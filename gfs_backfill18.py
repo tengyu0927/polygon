@@ -150,6 +150,11 @@ def main() -> int:
     ap.add_argument("--out", default="gfs18.csv")
     ap.add_argument("--jobs", type=int, default=10)
     ap.add_argument("--dry-run", action="store_true", help="只跑头几天测速")
+    ap.add_argument("--init", type=int, default=18, choices=[0, 6, 12, 18],
+                    help="起报轮次 UTC 小时。2026-08-18 加: 原来写死 18Z，"
+                         "而 12-14 时用的是当天 00Z@6h（mos_local6.csv）—— "
+                         "那份归档只有 8 站、缺郑州和济南，训练端这两站的 m7 "
+                         "恒为空，生产端却实时取到真值，是训练/预测错配")
     a = ap.parse_args()
     try:
         import eccodes as ec
@@ -186,7 +191,7 @@ def main() -> int:
     t0 = time.time()
     n_ok = n_bad = n_row = 0
     for i, d in enumerate(todo, 1):
-        init = datetime.datetime.combine(d, datetime.time(18), UTC)
+        init = datetime.datetime.combine(d, datetime.time(a.init), UTC)
         try:
             rows = do_day(init, a.jobs, ec)
         except Exception as e:                       # noqa: BLE001

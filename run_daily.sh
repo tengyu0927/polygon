@@ -193,6 +193,50 @@ PYCHK
     python3 verify.py --db "${PLOYGON_VERIFY_DB:-verify.sqlite}" || true
 } 2>&1 | tee -a "$LOG"
 
+# 本地 GFS 归档的日常维护。**2026-08-18 加** —— 在此之前没有任何东西维护
+# mos_local*.csv，于是它们停在 08-01/08-05（13-17 天），而且缺郑州和济南
+# （归档扩到 10 站之后从没重建过），训练端那两站的 m7 恒为空、生产端却实时
+# 取到真值 —— 训练/预测错配，10 个站里 2 个，而且现有检查全抓不到。
+# 只回补最近几天再重建；失败一律不影响当天预报。
+{
+    echo; echo "── 本地 GFS 归档维护"
+    _d0=$(date -v-4d +%F 2>/dev/null || date -d '4 days ago' +%F)
+    _d1=$(date +%F)
+    for _init in 18 0; do
+        _f=$([[ $_init == 18 ]] && echo gfs18.csv || echo gfs00.csv)
+        [[ -f $_f ]] || { echo "  [skip] 缺 $_f，需先全量回补"; continue; }
+        python3 gfs_backfill18.py --init "$_init" --start "$_d0" --end "$_d1"             --out "$_f" --jobs 8 2>&1 | tail -1 || echo "  [warn] ${_init}Z 回补失败"
+    done
+    [[ -f gfs18.csv.gz ]] && gzip -kf gfs18.csv 2>/dev/null || true
+    [[ -f gfs00.csv ]] && gzip -kf gfs00.csv 2>/dev/null || true
+    # **重建前必须确认归档是完整的。** 2026-08-19 踩过: 00Z 全量回补才跑了
+    # 20/870 天，这里照样重建，把 mos_local6.csv 从 845 天覆盖成 20 天 ——
+    # 而且 check_consistency 当时只查「站覆盖 + 最后日期」，20 天的文件两条都满足，
+    # 报了「✓ 通过」。先写到临时文件，天数够了才换上去。
+    _rebuild() {   # $1=归档 $2=lead $3=输出
+        [[ -f $1 ]] || { echo "  [skip] 缺 $1"; return 0; }
+        local _tmp="/tmp/_rb_$$_$3"
+        python3 gfs_local_build.py --gz "$1" --lead "$2" --obs-db cn.sqlite             --out "$_tmp" 2>&1 | tail -1 || { echo "  [warn] $3 重建失败"; return 0; }
+        local _new _old
+        _new=$(python3 -c "import csv,sys;print(len({r['date'] for r in csv.DictReader(open(sys.argv[1]))}))" "$_tmp" 2>/dev/null || echo 0)
+        _old=$([[ -f $3 ]] && python3 -c "import csv,sys;print(len({r['date'] for r in csv.DictReader(open(sys.argv[1]))}))" "$3" 2>/dev/null || echo 0)
+        if (( _new + 5 < _old )); then
+            echo "  [!] $3 新建只有 $_new 天、现有 $_old 天 —— **不覆盖**（归档可能还没回补完）"
+        else
+            mv "$_tmp" "$3"; echo "  $3 已更新: $_new 天"
+        fi
+        rm -f "$_tmp"
+    }
+    _rebuild gfs18.csv.gz 12 mos_local12.csv
+    _rebuild gfs00.csv.gz 6  mos_local6.csv
+
+    # AIFS（9 时的第八成员）也没人维护，2026-08-18 查出它停在 08-11、滞后 8 天。
+    # 它走 previous-runs-api，与五个追加模式同一条路，只是当初没进这段循环。
+    echo "  刷新 AIFS（9 时第八成员）"
+    python3 build_mos_dataset.py fetch --db mos_aifs.sqlite --model ecmwf_aifs025_single --start "$_d0" --end "$_d1" 2>&1 | tail -1 || echo "  [warn] AIFS 取数失败"
+    python3 build_mos_dataset.py build --db mos_aifs.sqlite --obs-db cn.sqlite --daily-table daily --out mos_aifs.csv 2>&1 | tail -1 || true
+} 2>&1 | tee -a "$LOG"
+
 # 集合预报采集，这里取 3 天以覆盖 D+1/D+2 的时效档（见 run_hourly 里的说明）
 python3 ens_collect.py --db "${PLOYGON_ENS_DB:-ens.sqlite}" --days 3 \
     2>&1 | tail -1 >&2 || echo "  [warn] 集合采集失败（不影响预报）" >&2
