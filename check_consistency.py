@@ -339,8 +339,22 @@ def check_scripts(args):
     # 也数进去（"  ZGSZ 改用 WU 实况…" 就让这里数出 9 个站，误报了一整轮）。
     # 数值列必须同时认数字和 "--" —— 观测不足时整行是 "--"，只认数字的话
     # 半夜跑这项会数出 0 个站，等于把误报从 9 换成了 0。
-    rows = [l for l in r.stdout.splitlines()
-            if re.match(r"^  Z[A-Z]{3}\s+\S+\s+(-?\d|--)", l)]
+    # **只取主预报表**: 表头（站点/预报/不排除/已达）之后、第一个 `──` 之前。
+    # 2026-08-19 踩过: 新加的「见顶时刻概率」「档位配置建议」「近期偏差订正」
+    # 各自也是「两空格 + ICAO + 站名 + 数字」的格式（见顶概率那行是
+    # "ZUCK 重庆江北  1%  38%…"，"1%" 同样匹配数字），于是这里数出 30 个站；
+    # 而见顶概率里的提示语「⚠ 大概率拖到下午晚些」又被下面 degraded 那行
+    # 当成降级标记，凭空报出「1 个站缺模式特征」。**两处都是误报。**
+    rows, _inblk = [], False
+    for l in r.stdout.splitlines():
+        if re.match(r"^\s*站点\s+预报\s+不排除\s+已达", l):
+            _inblk = True
+            continue
+        if _inblk and l.lstrip().startswith(("──", "关于", "「")):
+            _inblk = False
+            continue
+        if _inblk and re.match(r"^  Z[A-Z]{3}\s+\S+\s+(-?\d|--)", l):
+            rows.append(l)
     # 站数取自 stations.py。2026-08-11 踩过: 这里写死 8，扩到 10 站时漏改，
     # 于是实跑明明通过（退出码 0、10 个站、其余五项全绿）却报 ✗。
     import stations as _ST2
