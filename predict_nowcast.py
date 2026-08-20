@@ -497,6 +497,20 @@ def main() -> int:
                 return f"↑{c3[0]:.0%}"
         c = _exc["cells"].get(f"{cut}|{i}")
         return "" if not c else f"↑{c[0]:.0%}"
+
+    def _exceed_p(cut, rise, drop=None):
+        """同 _exceed，但返回概率本身（None = 查不到）。给 P90 的自洽约束用。"""
+        if not _exc or rise >= _exc["edges"][-1]:
+            return None
+        i = next((k for k, e in enumerate(_exc["edges"]) if rise < e), None)
+        de = _exc.get("drop_edges")
+        if drop is not None and de and _exc.get("per_drop"):
+            di = next((k for k, e in enumerate(de) if drop < e), len(de))
+            c3 = _exc["per_drop"].get(f"{cut}|{i}|{di}")
+            if c3:
+                return c3[0]
+        c = _exc["cells"].get(f"{cut}|{i}")
+        return c[0] if c else None
     # 高优势清单（edge_table.json + 生产已有的 pred_mos.csv）。
     # **不改任何预报值。** 回答的是「什么时候我们对而隔夜预报错」——
     # 盘口大概率锚定在隔夜预报上，所以优势 = 我们的把握 × 隔夜的错误。
@@ -889,6 +903,18 @@ def main() -> int:
         ehs = f"{eh:>7.0%}" if eh is not None else ""
         _ai = _alt_int(f, msf, stn)
         agr = "" if _ai is None else ("一致" if _ai == shown else f"分歧{_ai}")
+        # 「不排除」与「更高?」必须自洽: **超过已达的概率 < 10%，90 分位就不该
+        # 高于已达值**。2026-08-20 加 —— 用户指出深圳降温日仍印「不排除 32」。
+        # 实测 12/13 时有 92.7~97.9% 的站日「不排除」都高于已达，几乎逢报必高一档；
+        # 而 P90 覆盖率是 94.6~96.5%（目标 90%），本来就偏保守报太高。
+        # 压之后覆盖率 93.5~95.4%，仍全部高于 90%，不存在压过头；被压的行占
+        # 5.1~14.3%（12~15 时），9-11 时一行不压（那三档 rise 几乎都 >=0.5，
+        # 「更高?」本来就不印）。压到 max(已达, 点预报) —— 不能低于点预报，
+        # 否则「不排除」比「预报」还小。
+        _pe = _exceed_p(cutoff, rise, f.get("sofar_minus_now"))
+        if (p90 is not None and _pe is not None and _pe < 0.10
+                and round(p90) > round(msf)):
+            p90 = max(round(msf), shown)
         pc = (f"{round(p90):>8}" if p90 is not None
               else (f"{'--':>8}" if args.p90 else ""))
         print(f"  {stn} {N.NAMES.get(stn,''):<9}{shown:>7}{pc}{msf:>7.0f}"
