@@ -48,6 +48,26 @@ import stations as _S                      # noqa: E402
 import train_nowcast as N                  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__)) or "."
+
+
+def w(s: str) -> int:
+    """字符串在终端里占几列。**中文是双宽的**，而 f-string 的 :<9 按字符数补，
+    不按显示宽度 —— 站名 4 个汉字算 4 字符却占 8 列，表头「站点」2 字符占 4 列，
+    直接用 f-string 对齐必然歪。"""
+    import unicodedata
+    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in s)
+
+
+def L(s, n):
+    """左对齐到 n 显示列。"""
+    return s + " " * max(0, n - w(s))
+
+
+def R(s, n):
+    """右对齐到 n 显示列。"""
+    return " " * max(0, n - w(s)) + s
+
+
 CUTS = [9, 10, 11, 12, 13, 14, 15]
 HDR = re.compile(r"^\s*站点\s+预报\s+不排除\s+已达")
 ROW = re.compile(r"^\s{2,}(Z[A-Z]{3})\s+\S+\s+(-?\d+)\s")
@@ -154,10 +174,12 @@ def main() -> int:
           f"   {'✓ 已过峰值时段，命中可当定论' if done else f'⚠ 未过峰值时段（须 >= {N.PEAK_H1} 时），实况还会涨，命中是暂定'}")
     print(f"  跑于 {datetime.now():%H:%M}\n")
 
-    head = f"  {'站点':<15}{'实况':>5}{'D+2':>6}{'D+1':>6}"
-    head += "".join(f"{c:>5}时" for c in CUTS) + f"{'命中':>8}"
+    # 列宽（显示列）: 站点 16 / 实况 6 / 每个预报列 7 / 命中 9
+    CW, OW, PW, HW = 16, 6, 7, 9
+    head = ("  " + L("站点", CW) + R("实况", OW) + R("D+2", PW) + R("D+1", PW)
+            + "".join(R(f"{c}时", PW) for c in CUTS) + R("命中", HW))
     print(head)
-    print("  " + "-" * (len(head) - 2))
+    print("  " + "-" * (w(head) - 2))
 
     tot_h = tot_n = 0
     for s in sorted(_S.ICAOS):
@@ -165,27 +187,24 @@ def main() -> int:
             continue
         act = obs[s][0]
         cells, h, n = [], 0, 0
-        for v in (mos.get(2, {}).get(s), mos.get(1, {}).get(s)):
+        for v in ([mos.get(2, {}).get(s), mos.get(1, {}).get(s)]
+                  + [nc.get((c, s)) for c in CUTS]):
             if v is None:
-                cells.append(f"{'-':>6}")
+                cells.append(R("-", PW))
             else:
-                n += 1; h += (v == act)
-                cells.append(f"{('✓' + str(v)) if v == act else str(v):>6}")
-        for c in CUTS:
-            v = nc.get((c, s))
-            if v is None:
-                cells.append(f"{'-':>6}")
-            else:
-                n += 1; h += (v == act)
-                cells.append(f"{('✓' + str(v)) if v == act else str(v):>6}")
-        tot_h += h; tot_n += n
-        print(f"  {s} {_S.NAMES.get(s, '')[:5]:<9}{act:>5}" + "".join(cells)
-              + f"{f'{h}/{n}':>8}")
+                n += 1
+                h += (v == act)
+                cells.append(R(("✓" + str(v)) if v == act else str(v), PW))
+        tot_h += h
+        tot_n += n
+        print("  " + L(f"{s} {_S.NAMES.get(s, '')}", CW) + R(str(act), OW)
+              + "".join(cells) + R(f"{h}/{n}", HW))
 
-    print("  " + "-" * (len(head) - 2))
-    print(f"  {'合计':<15}{'':>5}" + "".join(
-        f"{_col(mos, nc, obs, i):>6}" for i in range(2 + len(CUTS)))
-        + f"{f'{tot_h}/{tot_n}':>8}")
+    print("  " + "-" * (w(head) - 2))
+    print("  " + L("合计", CW) + R("", OW)
+          + "".join(R(_col(mos, nc, obs, i), PW)
+                    for i in range(2 + len(CUTS)))
+          + R(f"{tot_h}/{tot_n}", HW))
     if not done:
         print(f"\n  注: 「实况」是截止 {lh} 时的累计最高，峰值时段（到 "
               f"{N.PEAK_H1} 时）还没过完 —— 现在算错的可能只是还没升到。")
