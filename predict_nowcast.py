@@ -475,10 +475,26 @@ def main() -> int:
         except Exception:                              # noqa: BLE001
             _exc = {}
 
-    def _exceed(cut, rise):
+    def _exceed(cut, rise, drop=None):
+        """「更高?」= 有多大概率比报出去的这个数更高。
+
+        **优先查「档 × 已降多少」**，缺格才回退到只按档。2026-08-20 加这一维:
+        用户指出深圳 11 时 31 度、12 时 30、13 时 29，13 时起报已达仍是 31，
+        于是印「不排除 32」——「明明在降温还在往上报」。实测确实错得离谱:
+        13 时「已降>=2 度」的站日实际只有 5.0% 会超过已达，而原表印 24.4%；
+        14 时印 20.1%、实际 1.8%。方向是系统性的（没降的组反而低估 5~7pt）。
+        根因是 `sofar_minus_now` 在 REGIME_FEATS 里，而 9/12/13 时不开 REGIME。
+        加这一维后前半建后半验 +4.55%，四种切分 × 五个有样本时次 20/20 全正。
+        """
         if not _exc or rise >= _exc["edges"][-1]:
             return ""
         i = next((k for k, e in enumerate(_exc["edges"]) if rise < e), None)
+        de = _exc.get("drop_edges")
+        if drop is not None and de and _exc.get("per_drop"):
+            di = next((k for k, e in enumerate(de) if drop < e), len(de))
+            c3 = _exc["per_drop"].get(f"{cut}|{i}|{di}")
+            if c3:
+                return f"↑{c3[0]:.0%}"
         c = _exc["cells"].get(f"{cut}|{i}")
         return "" if not c else f"↑{c[0]:.0%}"
     # 高优势清单（edge_table.json + 生产已有的 pred_mos.csv）。
@@ -866,7 +882,9 @@ def main() -> int:
         # rise>=0.5 时误差是双向的（14 时报高占 41%），不印 —— 那时以「预报」
         # 和「不排除」两列为准。
         _pp = _peak_prob(f, med, names)   # 「预期命中」要用它当第三维，须先算
-        conf = _exceed(cutoff, rise)
+        # sofar_minus_now 由 build_feats 一律计算（不受 flag 控制），所以
+        # 9/12/13 时虽然模型里没这一项，这里照样拿得到
+        conf = _exceed(cutoff, rise, f.get("sofar_minus_now"))
         eh = _exp_hit(cutoff, rise, _pp[2] if _pp is not None else None)
         ehs = f"{eh:>7.0%}" if eh is not None else ""
         _ai = _alt_int(f, msf, stn)
