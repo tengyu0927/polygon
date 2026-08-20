@@ -223,6 +223,13 @@ def fit_block(tr, names, alphas, val_days=90, peak=False, cutoff=12):
                            if os.environ.get("PLOYGON_ORDCLS") == "1" else None),
                 "settled": (N.fit_settled(rows_tr, med, names)
                             if os.environ.get("PLOYGON_SETTLED") == "1" else None),
+                # 「见顶时刻」判别器。它的 P(晚) 当「预期命中」查表的一维 ——
+                # 必须用**本时次自己的**，用 9 时那个只有 +0.21%（见 fit_peak_prob）
+                # **键名不能叫 peak** —— fit_block 里 "peak" 已被 --peak-feat
+                # 那条路占用（存的是 (模型, med, names, cutoff) 元组），
+                # 撞了会让 add_peak_feats(*m["peak"]) 拆包失败。2026-08-19 踩过。
+                "peakp": (N.fit_peak_prob(rows_tr, med, names)
+                          if os.environ.get("PLOYGON_PEAKP") == "1" else None),
                 "q90": q90, "rise_mu": rise_mu, "gbm": gbm, "cls": cls}
 
     # 第一段: 见顶时刻辅助模型。只用训练集拟合，再把预报值注入全部行的特征
@@ -678,6 +685,12 @@ def main() -> int:
                 # 诊断脚本重算，两端特征就会对不上（这类静默错配已犯过四次）。
                 ps = [None] * len(sub)
                 pre_r = list(mean_r)          # 覆盖前的连续升幅，扫阈值要用
+                pkp = [None] * len(sub)
+                if m.get("peakp") is not None:
+                    Xp, _ = N.matrix(sub, m["median"], names)
+                    import numpy as _np2
+                    pkp = list(m["peakp"]["clf"].predict_proba(
+                        _np2.asarray(Xp, float))[:, 2])
                 # 判别器**一律用合并模型的**，与生产一致 ——
                 # train_nowcast.py 只训一个 `SETTLED_STORE[cutoff] =
                 # fit_settled(tr+va, …)`，全部站共用。
@@ -703,13 +716,13 @@ def main() -> int:
                     mean_r = [0.0 if p >= N.SETTLED_TH else v
                               for p, v in zip(ps, mean_r)]
 
-                for r, rm, rk, rw, rq, pv, r0 in zip(sub, mean_r, mode_r, win_r,
-                                                     p90_r, ps, pre_r):
+                for r, rm, rk, rw, rq, pv, r0, pk in zip(sub, mean_r, mode_r, win_r,
+                                                         p90_r, ps, pre_r, pkp):
                     res[(stn, cutoff)].append(
                         (r["date"], r["so_far"] + rm, r["tmax"], r["so_far"],
                          r["so_far"] + rk, r["so_far"] + rw,
                          r["so_far"] + max(rq, rm),    # P90 不得低于点预报
-                         pv, r["so_far"] + r0))
+                         pv, r["so_far"] + r0, pk))
 
     if miss_nwp:
         print(f"[warn] 评估期有 {miss_nwp} 个站日缺 GFS 特征（mos.csv 未覆盖到），"
@@ -826,9 +839,9 @@ def main() -> int:
             w.writerow(["station", "date", "cutoff", "pred_mean", "pred_mode",
                         "pred_win", "actual", "so_far",
                         "w1_mean", "w1_mode", "w1_win", "hit_win", "pred_p90",
-                        "pred_raw", "settled_p", "pred_pre"])
+                        "pred_raw", "settled_p", "pred_pre", "peak_p"])
             for (stn, c), v in sorted(res.items()):
-                for d, p, a, sf, pk, pw, pq, pv, p0 in v:
+                for d, p, a, sf, pk, pw, pq, pv, p0, pkp_ in v:
                     w.writerow([stn, d, c, round(p), round(pk), round(pw), a, sf,
                                 int(abs(round(p) - a) <= 1),
                                 int(abs(round(pk) - a) <= 1),
@@ -836,7 +849,8 @@ def main() -> int:
                                 int(round(pw) == round(a)), round(pq),
                                 round(p, 4),
                                 "" if pv is None else round(pv, 4),
-                                round(p0, 4)])
+                                round(p0, 4),
+                                "" if pkp_ is None else round(pkp_, 4)])
         print(f"\n逐日结果已写 {args.csv_out}")
     return 0
 

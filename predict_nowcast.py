@@ -670,7 +670,14 @@ def main() -> int:
     except Exception:                                  # noqa: BLE001
         _hit = {}
 
-    def _exp_hit(cut, rise):
+    def _exp_hit(cut, rise, p_late=None):
+        """预期命中率。**三维（时次 × 升幅 × 晚见顶概率）优先，缺格自动回退二维。**
+
+        2026-08-19 加第三维: 同样的剩余升幅，今天这个站「早早定下来」还是
+        「拖到 16 点还在升」，把握完全不同（15 时按晚见顶概率五等分，命中率
+        从 99.6% 到 45.7%）。查表 Brier 改善 +3.24%，三种切分 × 三个时次
+        9/9 全为正。**必须用本时次自己判的概率**，用 9 时那个只有 +0.21%。
+        """
         if not _hit:
             return None
         b = 0
@@ -678,6 +685,14 @@ def main() -> int:
             if rise <= e:
                 b = i
                 break
+        # peak_edges 是 {时次: [边界]} —— 逐时次按分位数算的，而且只有 13/14 时
+        # 有（其余时次四种切分下正负混杂，见 build_hit_table.PEAK_CUTOFFS）。
+        _pe = (_hit.get("peak_edges") or {}).get(str(cut))
+        if p_late is not None and _pe and _hit.get("cells3"):
+            pb = next((i for i, e in enumerate(_pe) if p_late <= e), len(_pe))
+            v3 = _hit["cells3"].get(f"{cut}|{b}|{pb}")
+            if v3:
+                return v3[0]
         v = _hit.get("cells", {}).get(f"{cut}|{b}")
         if v:
             return v[0]
@@ -850,8 +865,9 @@ def main() -> int:
         #
         # rise>=0.5 时误差是双向的（14 时报高占 41%），不印 —— 那时以「预报」
         # 和「不排除」两列为准。
+        _pp = _peak_prob(f, med, names)   # 「预期命中」要用它当第三维，须先算
         conf = _exceed(cutoff, rise)
-        eh = _exp_hit(cutoff, rise)
+        eh = _exp_hit(cutoff, rise, _pp[2] if _pp is not None else None)
         ehs = f"{eh:>7.0%}" if eh is not None else ""
         _ai = _alt_int(f, msf, stn)
         agr = "" if _ai is None else ("一致" if _ai == shown else f"分歧{_ai}")
@@ -860,7 +876,6 @@ def main() -> int:
         print(f"  {stn} {N.NAMES.get(stn,''):<9}{shown:>7}{pc}{msf:>7.0f}"
               f"{rise:>+10.1f}{ehs}{conf:>7}{agr:>7}{_otag}   {note}")
         rows_out.append((stn, shown, msf, rise))
-        _pp = _peak_prob(f, med, names)
         if _pp is not None:
             _peaks.append((stn, *_pp))
         if cutoff == RESID_CUTOFF:
