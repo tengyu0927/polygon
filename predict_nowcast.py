@@ -155,8 +155,12 @@ def from_db(db, table, stations, dates):
     tcol = "valid_time_gmt" if "valid_time_gmt" in cols else "obs_time_utc"
     get = lambda c: c if c in cols else "NULL"
     ph = ",".join("?" * len(stations))
+    # drct（风向）是 2026-08-22 加的 —— 训练端 load_hourly 一直在取，预测端
+    # 这条 SELECT 里没有。check_consistency 的 [1] 逐列比对当场把它抓出来了
+    # （KeyError: 'drct'）。列顺序改了就要同步改下面 r[9]。
     q = (f"SELECT station, {tcol}, temp_c, {get('dewp_c')}, {get('rh')}, "
-         f"{get('wspd_ms')}, {get('pres_hpa')}, {get('skyc1')}, {get('wxcodes')} "
+         f"{get('wspd_ms')}, {get('pres_hpa')}, {get('skyc1')}, {get('wxcodes')}, "
+         f"{get('drct')} "
          f"FROM {table} WHERE temp_c IS NOT NULL AND station IN ({ph})")
     params = list(stations)
     # 只要两天数据，别扫全表（248 万行）。local_date 上有索引，能走索引扫描
@@ -188,7 +192,8 @@ def from_db(db, table, stations, dates):
                   "rh": None if r[4] is None else float(r[4]),
                   "wspd": None if r[5] is None else float(r[5]),
                   "pres": None if r[6] is None else float(r[6]),
-                  "cld": N.cloud_frac(r[7]), "ts": tsf, "ra": raf, "obsc": obf}
+                  "cld": N.cloud_frac(r[7]), "ts": tsf, "ra": raf, "obsc": obf,
+                  "drct": None if r[9] is None else float(r[9])}
     conn.close()
     return days
 
@@ -251,11 +256,17 @@ def from_awc(stations, hours=30, retries=3):
         if h in d and d[h]["t"] >= float(t):
             continue
         dp = None if m.get("dewp") is None else float(m["dewp"])
+        wd = m.get("wdir")
+        # AWC 的 wdir 在静风时给 "VRB" 或 0，非数字一律当缺测
+        try:
+            wd = float(wd)
+        except (TypeError, ValueError):
+            wd = None
         d[h] = {"t": float(t), "dewp": dp,
                 "rh": _rh(float(t), dp),
                 "wspd": None if ws is None else float(ws) * 0.514444,
                 "pres": p, "cld": N.cloud_frac(cov),
-                "ts": tsf, "ra": raf, "obsc": obf}
+                "ts": tsf, "ra": raf, "obsc": obf, "drct": wd}
     if inhg:
         print("[note] AWC 气压为英寸汞柱，已换算为百帕", file=sys.stderr)
     return days

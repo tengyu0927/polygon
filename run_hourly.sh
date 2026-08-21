@@ -8,6 +8,7 @@
 #
 # 9-13 时用六模式模型（要联网取 6 份 GFS/ECMWF/... 预报，约 1 分钟）
 # 14/15 时用纯实况模型（不联网，快）—— 那时大部分站已见顶，模式信息没有增量。
+# 16/17 时**不跑模型**，直接报已达（late_call.py），见那里的实测对比。
 
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -89,10 +90,16 @@ HOUR=${1:-$(TZ=Asia/Shanghai date +%-H)}
 TODAY=$(TZ=Asia/Shanghai date +%Y-%m-%d)
 LOG=${PLOYGON_LOG:-pred_${TODAY}.log}   # 一致性检查会覆盖它，避免污染真实日志
 
-if (( HOUR < 9 || HOUR > 15 )); then
-    echo "[error] 只支持 9-15 时，收到 $HOUR" >&2
+if (( HOUR < 9 || HOUR > 17 )); then
+    echo "[error] 只支持 9-17 时，收到 $HOUR" >&2
     exit 1
 fi
+
+# 16/17 时不跑模型，直接报已达（late_call.py）。那时 96.6%/99.5% 的站日
+# 当天最高温已经出现，训模型实测更差、且报已达就等于完美判别上界。
+# 用户目标「十站至少九站对」正落在 16 时（按日 95.6%），15 时只有 67.2%。
+LATE=""
+(( HOUR >= 16 )) && LATE=1
 
 # 9-13 时都用六模式模型。12/13 时原来用纯实况长序列，实测被六模式显著打败
 # （12 时 MAE 0.716 -> 0.618，13 时 0.519 -> 0.455），已切换
@@ -105,7 +112,10 @@ fi
 # **15 时仍然不切。** 它整体反而变差（+0.0037, P=19%）: 晚见顶那 452 个
 # 样本赚 0.11，但 <=15 时见顶的 3070 个样本每个亏 0.02，样本量 7 倍、一乘
 # 就抵掉了。15 时现在 87.4% 完全命中是全系统最高的一档，不拿它去赌 12%。
-if (( HOUR <= 14 )); then
+if [[ -n "$LATE" ]]; then
+    MODEL=""
+    EXTRA=()
+elif (( HOUR <= 14 )); then
     MODEL=nowcast_nwp.json
     if (( HOUR == 9 )); then
         EXTRA=(--extra-models "$MODELS9")
@@ -152,10 +162,14 @@ fi
 
 {
     echo
-    echo "########## $(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S')  ${HOUR} 时起报  模型 $MODEL ##########"
-    python3 predict_nowcast.py --model "$MODEL" --cutoff "$HOUR" \
-        --hurdle --p90 --verbose $USE_LIVE ${EXTRA[@]+"${EXTRA[@]}"} \
-        ${ONLY:+--stations "$ONLY"}
+    echo "########## $(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S')  ${HOUR} 时起报  模型 ${MODEL:-报已达} ##########"
+    if [[ -n "$LATE" ]]; then
+        python3 late_call.py --cutoff "$HOUR" ${ONLY:+--stations "$ONLY"}
+    else
+        python3 predict_nowcast.py --model "$MODEL" --cutoff "$HOUR" \
+            --hurdle --p90 --verbose $USE_LIVE ${EXTRA[@]+"${EXTRA[@]}"} \
+            ${ONLY:+--stations "$ONLY"}
+    fi
 } 2>&1 | tee -a "$LOG"
 
 # 集合预报采集。**只攒数据，不进任何模型** —— Open-Meteo 的集合 API 拿不到
