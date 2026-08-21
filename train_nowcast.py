@@ -953,9 +953,9 @@ def fit_peak_prob(rows, med, names):
       与「晚见顶站点比例」相关 r=-0.274，与「12 时后平均还需涨」r=-0.301
       晚见顶比例 0-15% 的日子 12 时命中 57%，>50% 的日子只有 43%
 
-    分档: 早 <13 时 / 正常 13-14 时 / 晚 >=15 时。**各站基础率差一个数量级**
-    （晚见顶占比: 上海 6% / 青岛 13% / 深圳 21% / 北京 30% / 武汉 43% /
-    重庆 47% / 成都 53%），所以「打赢各站基础率」才是有效性的判据。
+    分档: 早 <13 时 / 正常 13-15 时 / **晚 >=16 时**。各站基础率（>=16）:
+    成都 29% / 重庆 23% / 武汉 19% / 郑州 13% / 济南 9% / 广州 8% / 深圳 8% /
+    北京 6% / 青岛 3% / 上海 2%，全站合计只有 12%（夏季成都到 42%）。
 
     验证（标准窗口对半切，2279 站日验证）:
       合并 AUC  各站基础率 0.682 -> 判别器 0.745
@@ -980,7 +980,12 @@ def fit_peak_prob(rows, med, names):
     if len(sub) < 500:
         return None
     X, _ = matrix(sub, med, names)
-    y = _np.asarray([0 if r["peak_h"] < 13 else (1 if r["peak_h"] < 15 else 2)
+    # 分界 **>=16 时**，不是 >=15。操作依据: 15 时那轮（15:15 起报）看得到
+    # 15:00 的观测，所以 15 点见顶抓得住；16/17 点见顶时所有轮次都结束了，必然漏。
+    # 2026-08-21 从 >=15 改过来，同时判别力也更好: AUC 0.678 -> 0.767。
+    # 「各站基础率」这条基线在新定义下 AUC 只有 0.487（等于瞎猜）—— 光知道
+    # 「成都容易晚见顶」没用，必须看今天的条件；旧定义下基础率还有 0.682。
+    y = _np.asarray([0 if r["peak_h"] < 13 else (1 if r["peak_h"] < 16 else 2)
                      for r in sub])
     if len(set(y.tolist())) < 3:
         return None
@@ -1001,13 +1006,23 @@ def fit_peak_prob(rows, med, names):
             p_late = clf.predict_proba(Xa)[:, 2]     # 折不出来就退回（会偏乐观）
             break
         p_late[te] = mk().fit(Xa[~te], y[~te]).predict_proba(Xa[te])[:, 2]
-    q = [float(v) for v in _np.quantile(p_late, [0.2, 0.4, 0.6, 0.8])]
+    # **十档，不是五档。** 2026-08-21 踩过: 五档时 top 20% 全塌成一个数 ——
+    # 某天五个站的原始概率是 49%/34%/23%/20%/19%，差别很大却一律回填成 28%，
+    # 五个站同时标 ⚠、看不出谁更危险。十档能把最高的一两个分出来。
+    q = [float(v) for v in _np.quantile(p_late, [i / 10 for i in range(1, 10)])]
     cal = []
     lo = -1.0
     for hi in q + [2.0]:
         m_ = (p_late >= lo) & (p_late < hi)
         cal.append(float((y[m_] == 2).mean()) if m_.sum() >= 30 else None)
         lo = hi
+    # 校准值必须单调不减 —— 十档之后每档样本变少，个别档会因噪声反转。
+    # 相邻反转就取两者平均（保序回归的最简形式）压平。
+    for _ in range(len(cal)):
+        for j in range(len(cal) - 1):
+            if cal[j] is not None and cal[j + 1] is not None and cal[j] > cal[j + 1]:
+                _m = (cal[j] + cal[j + 1]) / 2
+                cal[j] = cal[j + 1] = _m
     return {"clf": clf, "edges": q, "cal": cal}
 
 
