@@ -99,14 +99,14 @@ def main() -> int:
 
     print(f"临近预报  目标日 {tgt}  截止 {a.cutoff:02d} 时（北京时）  直接报已达")
     print(f"\n  {'站点':<14}{'预报':>7}{'不排除':>8}{'已达':>7}{'预计再升':>10}"
-          f"{'更高?':>7}{'实况':>9}   备注")
+          f"{'更高?':>7}{'可下手':>8}{'实况':>9}   备注")
 
     n_stale = 0
     for s in want:
         v = {h: t for h, t in (H.get(s) or {}).items() if h <= a.cutoff}
         if len(v) < 5:
             print(f"  {s} {_S.NAMES.get(s, ''):<8}{'--':>7}{'--':>8}{'--':>7}"
-                  f"{'--':>10}{'--':>7}{'--':>9}   实况不足")
+                  f"{'--':>10}{'--':>7}{'--':>8}{'--':>9}   实况不足")
             continue
         last = max(v)
         msf = max(v.values())
@@ -119,8 +119,12 @@ def main() -> int:
         if last < a.cutoff - 1:
             note = f"实况滞后 {a.cutoff - last} 小时"
             n_stale += 1
+        # 「可下手」与 predict_nowcast 同口径: 1-超越概率 >= 0.95 就标 ✓。
+        # 16 时约八成站、17 时几乎全部站会到 ✓。
+        rdy = 1.0 - p_up
+        rc = (f"{'✓ ' + format(rdy, '.0%'):>8}" if rdy >= 0.95 else f"{rdy:>8.0%}")
         print(f"  {s} {_S.NAMES.get(s, ''):<8}{pred:>7}{hi:>8}{msf:>7.0f}"
-              f"{0.0:>10.1f}{p_up:>7.0%}{v[last]:>9.0f}   {note}")
+              f"{0.0:>10.1f}{p_up:>7.0%}{rc}{v[last]:>9.0f}   {note}")
 
     print(f"\n  {a.cutoff} 时不跑模型 —— 那时「还会不会再升」已几乎没有不确定性，"
           f"报已达即为完美上界。")

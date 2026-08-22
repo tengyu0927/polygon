@@ -185,6 +185,53 @@ elif _mf == "lvl":
 elif _mf == "corr":
     FEATS += ["mosd_minus_nwp"]
 
+# 海风/风向转变一族（A/B 测试中，PLOYGON_WX=1 打开）。
+#
+# 物理: 下午还能不能继续升，主要由三件事封顶 —— 海风锋到、对流云压顶、
+# 冷平流。前两件在观测上的签名都是「风转向 + 风速起来 + 露点跳升，而气温停住」。
+# 十个站里浦东/青岛/深圳/白云四个是沿海站，海风封顶是它们的主要机制。
+#
+# **与 2026 年早些时候被否的那次不是同一组东西**，两点区别:
+#   1. 判据变了。上次按 ΔMAE 判，11/13 时 0.000 / -0.004 不显著；这次按
+#      **完全命中**判 —— 那才是使用方的损失函数。同一批特征，两个指标可以
+#      一个平一个赢: 海风封顶把升幅从 +1.3 削到 +0.4，MAE 只动一点点，
+#      但整数档位从 +1 变成 0，0/1 命中直接翻面。
+#   2. 风向转变改成**有符号**（_adir），顺转/逆转不再被绝对值抹平。
+#
+# **试过没赢，flag 默认关，别再开第四次。** 完整经过（2026-08-22）:
+#
+# 先用 split-half + GBM 筛，看着很行 ——
+#     12 时 +0.43   13 时 +0.36   14 时 +0.22   11 时 +0.19   10 时 +0.00
+#     平均 +0.24pt，20 个组合（四切分 x 五时次）里 16 个为正
+# 然后走生产管线做真 A/B（同一条 backtest 命令跑两遍、只差这一个 flag，
+# 16 个滚动重训块，四个臂特征数各 +8 项已核对）:
+#
+#     时次     base      new        Δ    P(Δ>0)
+#     10 时  39.02%   38.94%   -0.09%   41.6%
+#     11 时  44.58%   44.19%   -0.39%   16.4%
+#     12 时  49.98%   50.48%   +0.50%   86.2%
+#     13 时  60.62%   60.23%   -0.39%   16.0%
+#     14 时  72.02%   72.30%   +0.28%   81.1%
+#     合计   53.25%   53.23%   -0.02%   45.8%     逐月 9/16 为正
+#
+# 按日配对区组自助 2000 次。合计 P=45.8%，离 95% 的门槛差得远。
+#
+# **教训比结论重要**: 筛选用的模型族必须与生产一致。生产在 12/13 时是
+# **纯线性岭回归**，而我拿 GBM 筛 —— 风向的 sin/cos 对线性模型基本是废列
+# （没有交互项就表达不了「哪个方向偏暖」），GBM 却能切。同一批特征在两个
+# 模型族里排序可以完全相反，这在 README 的 CONV/PROF 那节已经写过一次
+# （「结论会随模型结构翻转」），我又踩了一遍。
+#
+# 同批试过的「能见度 / 云底高 / 上午降水」split-half 只有 +0.08（12/20），
+# 更弱，连生产 A/B 都没跑。
+#
+# **列仍然一律计算**（predict/train 两端口径一致，drct 的取数已补齐），
+# 要重测的人把 PLOYGON_WX=1 打开即可，不必再改一遍取数管线。
+WX_FEATS = ["wdir_sin", "wdir_cos", "wdir_shift_3h", "wdir_shift_1h",
+            "wspd_tend_3h", "dewp_tend_3h", "dewp_tend_1h", "seabreeze"]
+if os.environ.get("PLOYGON_WX") == "1":
+    FEATS += WX_FEATS
+
 REGIME_FEATS = ["sofar_minus_now", "sofar_hour", "sofar_is_night",
                 "ts_hours_am", "ra_hours_am", "wet_frac_am"]
 if os.environ.get("PLOYGON_REGIME") == "1":
@@ -520,6 +567,18 @@ def morning(hrs, cutoff):
     return o
 
 
+def _adir(a, b):
+    """两个风向的**有符号**角差，-180~180。正=顺转(veering)，负=逆转(backing)。
+
+    必须带符号: 海风锋过境是顺转(陆风 -> 向岸风)，而 `_wdir_feats` 里那个
+    `wdir_shift` 取了绝对值，把顺转逆转混成一个数 —— 那正是上次这组特征
+    没赢的原因之一。
+    """
+    if a is None or b is None:
+        return None
+    return (a - b + 180) % 360 - 180
+
+
 def _wdir_feats(now, am_list):
     """风向 -> sin/cos。另给上午平均风向与「风向转了多少」(0-180 度)。
 
@@ -600,6 +659,22 @@ def build_feats(o, cutoff, prev, clim_r, clim_p, doy, nwp):
            ("dewp", "rh", "wspd", "cld")},
         "dpd_tend_3h": (None if (diff(3) is None or _tend(o, lh, "dewp") is None)
                         else diff(3) - _tend(o, lh, "dewp")),
+        # 海风/风向转变一族（A/B 测试中，PLOYGON_WX=1 打开）。见 WX_FEATS 的说明。
+        # **列一律计算，只有「进不进 FEATS」受 flag 控制** —— 2026-08-06 那次
+        # 静默错配就是因为把计算也门控了（见 NWP_COLS 那段）。
+        # 一律用 .get —— 逐时观测字典有四个构造点（train_nowcast.load_hourly、
+        # predict_nowcast 的 from_db / WU / AWC 三条），键集合不保证一致。
+        # 缺了走 matrix() 的中位数填补 + 缺测指示位，而**真正的错配由
+        # check_consistency 的 [1] 逐列比对来抓**，不靠这里崩。
+        **_wdir_feats(cur.get("drct"), [v.get("drct") for v in am]),
+        "wdir_shift_3h": _adir(cur.get("drct"),
+                               o[lh - 3].get("drct") if lh - 3 in o else None),
+        "wdir_shift_1h": _adir(cur.get("drct"),
+                               o[lh - 1].get("drct") if lh - 1 in o else None),
+        "dewp_tend_1h": _tend(o, lh, "dewp", 1),
+        "seabreeze": (None if (_tend(o, lh, "wspd") is None
+                               or _tend(o, lh, "dewp") is None)
+                      else _tend(o, lh, "wspd") * max(0.0, _tend(o, lh, "dewp"))),
         "dewp_mean_am": (sum(v["dewp"] for v in am if v["dewp"] is not None)
                          / max(1, sum(1 for v in am if v["dewp"] is not None))
                          if any(v["dewp"] is not None for v in am) else None),
