@@ -4,6 +4,12 @@
 # 为什么不能一条命令跑完所有时次: 每档的 flag 和本地 GFS 时效都不同
 # （9 时无 REGIME 且含 AIFS、12 时带 DQ、9-11 用 local12 而 12-14 用 local6）。
 # 一把梭出来的序列不是生产在跑的东西，据此建的「预期命中」查表就是错的。
+#
+# **PLOYGON_PEAKP=1 一个都不能少。** backtest_nowcast 只在这个环境变量为 1 时
+# 才拟合见顶时刻判别器并写出 peak_p 列，而 build_hit_table 的第三维
+# （peak_edges / cells3，只对 13/14 时建）就是拿它分格的。漏了不会报错 ——
+# 只是 hit_table 静默退化成二维，「预期命中」少一个维度（实测 -3.24%）。
+# 2026-08-22 补: 在此之前脚本里没有这一项，现有 bt_c*.csv 是手工加环境变量跑的。
 set -euo pipefail
 cd "$(dirname "$0")"
 M5="mos_ecmwf.csv mos_cma.csv mos_icon.csv mos_jma_.csv mos_gem_.csv"
@@ -12,27 +18,27 @@ S=${1:-2025-05-01}; E=${2:-$(date +%F)}
 say() { printf '\n\033[1m>>> %s\033[0m\n' "$*"; }
 
 say "9 时（五要素 / 含 AIFS / local12）"
-env $F5 PLOYGON_SETTLED=1 python3 backtest_nowcast.py --db cn.sqlite --cutoffs 9 \
+env $F5 PLOYGON_PEAKP=1 PLOYGON_SETTLED=1 python3 backtest_nowcast.py --db cn.sqlite --cutoffs 9 \
     --start "$S" --end "$E" --nwp-csv mos.csv \
     --nwp-csv2 $M5 mos_local12.csv mos_aifs.csv --csv-out bt_c9.csv
 say "10/11 时（五要素+REGIME / local12）"
-env $F5 PLOYGON_REGIME=1 PLOYGON_SETTLED=1 python3 backtest_nowcast.py --db cn.sqlite \
+env $F5 PLOYGON_REGIME=1 PLOYGON_PEAKP=1 PLOYGON_SETTLED=1 python3 backtest_nowcast.py --db cn.sqlite \
     --cutoffs 10 11 --start "$S" --end "$E" --nwp-csv mos.csv \
     --nwp-csv2 $M5 mos_local12.csv --csv-out bt_c1011.csv
 say "12 时（去量化 / local6）"
-env PLOYGON_DQ=1 PLOYGON_SETTLED=1 python3 backtest_nowcast.py --db cn.sqlite --cutoffs 12 \
+env PLOYGON_DQ=1 PLOYGON_PEAKP=1 PLOYGON_SETTLED=1 python3 backtest_nowcast.py --db cn.sqlite --cutoffs 12 \
     --start "$S" --end "$E" --nwp-csv mos.csv --nwp-csv2 $M5 mos_local6.csv \
     --csv-out bt_c12.csv --no-baseline-check
 say "13 时（纯线性 / local6）"
-env PLOYGON_SETTLED=1 python3 backtest_nowcast.py --db cn.sqlite --cutoffs 13 \
+env PLOYGON_PEAKP=1 PLOYGON_SETTLED=1 python3 backtest_nowcast.py --db cn.sqlite --cutoffs 13 \
     --start "$S" --end "$E" --nwp-csv mos.csv --nwp-csv2 $M5 mos_local6.csv --csv-out bt_c13.csv
 say "14 时（五要素+REGIME / local6）"
-env $F5 PLOYGON_REGIME=1 PLOYGON_SETTLED=1 python3 backtest_nowcast.py --db cn.sqlite \
+env $F5 PLOYGON_REGIME=1 PLOYGON_PEAKP=1 PLOYGON_SETTLED=1 python3 backtest_nowcast.py --db cn.sqlite \
     --cutoffs 14 --start "$S" --end "$E" --nwp-csv mos.csv --nwp-csv2 $M5 mos_local6.csv \
     --csv-out bt_c14.csv
 say "15 时（纯实况）"
-python3 backtest_nowcast.py --db cn.sqlite --cutoffs 15 --start "$S" --end "$E" \
-    --csv-out bt_c15.csv
+PLOYGON_PEAKP=1 python3 backtest_nowcast.py --db cn.sqlite --cutoffs 15 \
+    --start "$S" --end "$E" --csv-out bt_c15.csv
 
 say "建查表"
 python3 build_hit_table.py bt_c9.csv bt_c1011.csv bt_c12.csv bt_c13.csv bt_c14.csv \

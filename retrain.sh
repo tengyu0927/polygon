@@ -109,13 +109,27 @@ cp nowcast_nwp.json.peak.pkl /tmp/_pk1011.pkl
 PLOYGON_DQ=1 python3 train_nowcast.py --db cn.sqlite --cutoffs 12 --nwp-csv mos.csv \
     --nwp-csv2 $M5 mos_local6.csv --peak-only nowcast_nwp.json
 cp nowcast_nwp.json.peak.pkl /tmp/_pk12.pkl
+# 13/14 时。**2026-08-22 补** —— 在此之前这段只写到 12 时，而线上 pkl 里
+# 有 9-14，那两档是手工补出来的、脚本没跟上。照抄各档自己的训练配置。
+python3 train_nowcast.py --db cn.sqlite --cutoffs 13 --nwp-csv mos.csv \
+    --nwp-csv2 $M5 mos_local6.csv --peak-only nowcast_nwp.json
+cp nowcast_nwp.json.peak.pkl /tmp/_pk13.pkl
+env $F5 PLOYGON_REGIME=1 python3 train_nowcast.py --db cn.sqlite --cutoffs 14 \
+    --nwp-csv mos.csv --nwp-csv2 $M5 mos_local6.csv --peak-only nowcast_nwp.json
+cp nowcast_nwp.json.peak.pkl /tmp/_pk14.pkl
 python3 - <<'PY'
 import pickle
 m = {}
-for f in ("/tmp/_pk9.pkl", "/tmp/_pk1011.pkl", "/tmp/_pk12.pkl"):
+for f in ("/tmp/_pk9.pkl", "/tmp/_pk1011.pkl", "/tmp/_pk12.pkl",
+          "/tmp/_pk13.pkl", "/tmp/_pk14.pkl"):
     m.update(pickle.load(open(f, "rb")))
 pickle.dump(m, open("nowcast_nwp.json.peak.pkl", "wb"))
 print("  见顶时刻判别器时次:", sorted(m))
 PY
+
+# 15 时（纯实况，无 NWP）走 nowcast_late.json —— 与上面那份是两个文件。
+# **别漏**: 它不在 nowcast_nwp.json.peak.pkl 里，check_consistency 在
+# 2026-08-22 之前也没查过它，于是「训好了但生产从没读过」的 bug 活了很久。
+python3 train_nowcast.py --db cn.sqlite --cutoffs 15 --peak-only nowcast_late.json
 
 say "完成。**接下来必须做**: 重建 hit_table（见 rebuild_tables.sh），再跑 check_consistency"
