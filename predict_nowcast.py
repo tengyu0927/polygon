@@ -100,6 +100,27 @@ UA = "nowcast/1.0 (station Tmax research)"
 # 与 to_rows 硬写 STATION、stn_id 训练端设了预测端没设是同一类病。
 WU_STATIONS = _S.WU_STATIONS
 
+# ⚠「16 点后见顶风险偏高」的门槛（校准后概率）。**只有这一处定义** ——
+# 见顶风险表和「档位配置建议」的抬档例外用的必须是同一个数，两边各写一个
+# 就会出现「表里标了 ⚠、档位却还说买一档」。
+# 阈值 20%: 每天亮 1.7 个站、精度 29%、召回 47%、漏 0.5 个/天。
+# 放到 30% 只亮 0.9 个站但召回掉到 32%；40% 只剩 0.5 个站、召回 18%。
+PEAK_WARN_TH = 0.20
+
+# 「基本能早早定下来」的门槛（P(见顶<13时)，**原始概率，没有校准表**）。
+#
+# 2026-08-22 从 0.5 提到 0.8。原门槛太松，样本外实测（标准窗口 4700 站日/轮，
+# 概率走按日期分块的 4 折交叉 —— 已部署的判别器训过全量，拿它评估必然虚高）:
+#     门槛 0.5   9 时标 22% 的站日、精度 61.7%   15 时标 30%、精度 93.1%
+#     门槛 0.8   9 时标 2.8%、精度 83.2%         15 时标 26%、精度 95.7%
+# 分站看差别更大: 门槛 0.5 时上海只标对 74.0%，而上海本来就有 64.9% 的日子
+# 是早见顶 —— 净提升 +9.1pt，几乎是在复读该站气候。提到 0.8 后上海 90.4%
+# （+25.6pt），十个站的净提升全部 >= +25.6pt、精度全部 >= 85%。
+#
+# **这一维没有经验频率回填**（fit_peak_prob 的校准表只建给 p_late），
+# 所以印出来的百分比是分类器原始输出，别当标定过的概率读。
+PEAK_EARLY_TH = 0.80
+
 
 def _overwrite_from_wu(days, stations, tgt, db):
     """把 days 里这些站的观测换成 WU 的。取不到就退回读库，绝不静默用 METAR。"""
@@ -433,18 +454,29 @@ def main() -> int:
         except Exception:                             # noqa: BLE001
             _state = {}
 
+    # numpy 是**所有** pkl 边文件（gbm / peak / settled）共用的前提，必须独立
+    # 拿，不能挂在 GBM 那一段里。2026-08-22 修: 原来 `_NP` 只在 gbm.pkl 读成
+    # 之后才绑定，而 15 时的 nowcast_late.json **没有 GBM 边文件** —— 于是
+    # `_PEAK` 的 `and _NP is not None` 恒假，训好落盘的 nowcast_late.json.peak.pkl
+    # （2.1MB）生产一次都没读过，15 时既不出见顶风险表也拿不到 p_late。
+    try:
+        import numpy as _NP                            # noqa: N813
+    except ImportError:
+        _NP = None
+
     # GBM 边文件。缺 sklearn / 缺文件 / 读不出来都自动降级成纯线性，不报错 ——
     # 与 predict_mos.py 同一约定（<model>.gbm.pkl）。
-    _GBM, _NP = {}, None
+    _GBM = {}
     _gp = args.model + ".gbm.pkl"
-    if os.path.exists(_gp):
+    if os.path.exists(_gp) and _NP is not None:
         try:
             import pickle
-            import numpy as _NP                        # noqa: N813
             _GBM = {int(k): v for k, v in pickle.load(open(_gp, "rb")).items()}
         except Exception as e:                          # noqa: BLE001
+            # 只降级 GBM 本身。**不要在这里清掉 _NP** —— 见顶/已见顶判别器
+            # 也靠它，GBM 坏了不该把那两个一起拖下水。
             print(f"[warn] GBM 没读成（{str(e)[:60]}），本轮只用线性", file=sys.stderr)
-            _GBM, _NP = {}, None
+            _GBM = {}
 
     # 对照模型（--agree-with）。**只标注，不改预报值。**
     # 2026-08-12 实测: 两个模型给出同一个整数时 9 时命中 37.9%，分歧时 31.1%
@@ -590,21 +622,44 @@ def main() -> int:
         except Exception:                              # noqa: BLE001
             _BK = {}
 
-    def _bucket_advice(cut, rise, shown):
-        """返回 (建议档位串, 历史覆盖率串)。样本不足就返回空。"""
+    def _bucket_advice(cut, rise, shown, p_late=None):
+        """返回 (建议档位串, 历史覆盖率串, 是否因晚见顶风险被抬档)。
+
+        样本不足就返回空。**不改任何预报值**，只改买几档。
+        """
         if not _BK:
-            return "", ""
+            return "", "", False
         i = next((k for k, e in enumerate(_BK["edges"]) if rise < e), len(_BK["edges"]))
         c = _BK["cells"].get(f"{cut}|{i}")
         if not c:
-            return "", ""
+            return "", "", False
         one, two, three = c[0], c[1], c[2]
         # 一档已经够好（>=85%）就买一档；否则两档；两档还不到 70% 就提三档
         if one >= 0.85:
-            return f"{shown}", f"{one:.0%}"
+            # **例外: ⚠ 晚见顶风险的站不许只买一档。** 2026-08-22 加。
+            #
+            # 这张表只按 (时次 x 剩余升幅) 分格，15 时剩余升幅几乎恒为 0，
+            # 于是整格覆盖 88%、一律建议一档 —— 而那 88% 是拿全体站日平均
+            # 出来的。拆开看: 15 时那一格里 ⚠ 标了的那 1/4 站日，一档只有
+            # 72.7~81.4%，剩下 3/4 才是 90%+。**误差全集中在晚见顶那批**
+            # （15 时按实际见顶档分: 早 99.8% / 正常 98.3% / 晚 6.3%，
+            # 而晚见顶时 93.7% 是报低、83.3% 恰好低 1 度、报高 0%）。
+            #
+            # 双向验证（标准窗口对半切，32254 行，概率走分块交叉折）:
+            #   前半定→后半验  受影响 381 行  81.4% -> 99.0%  (+17.6pt)
+            #   后半定→前半验  受影响 194 行  72.7% -> 96.4%  (+23.7pt)
+            # 全样本覆盖 88.32%->88.73% / 86.97%->87.26%，平均买的档数只多
+            # 0.012~0.023 —— 受影响的只有 1~2% 的行，全部落在 15 时。
+            #
+            # **不做成表的第三维。** 试过（p_late 三分位当第三维重建整张表）:
+            # 两个方向的覆盖-成本前沿与现行交叉、不占优，是分格变细后每格
+            # 样本不够的典型症状。只在「本来要买一档」这一处做例外才稳。
+            if p_late is not None and p_late >= PEAK_WARN_TH:
+                return f"{shown},{shown+1}", f"{two:.0%}", True
+            return f"{shown}", f"{one:.0%}", False
         if two >= 0.70 or three - two < 0.10:
-            return f"{shown},{shown+1}", f"{two:.0%}"
-        return f"{shown},{shown+1}｜或 ±1 三档", f"{two:.0%}｜{three:.0%}"
+            return f"{shown},{shown+1}", f"{two:.0%}", False
+        return f"{shown},{shown+1}｜或 ±1 三档", f"{two:.0%}｜{three:.0%}", False
 
     # 自身近期偏差订正。**只在 9 时。**
     #
@@ -926,6 +981,9 @@ def main() -> int:
         # rise>=0.5 时误差是双向的（14 时报高占 41%），不印 —— 那时以「预报」
         # 和「不排除」两列为准。
         _pp = _peak_prob(f, med, names)   # 「预期命中」要用它当第三维，须先算
+        # 校准后的晚见顶概率。见顶风险表、「不排除」下限、档位建议**共用这一个数**
+        _pl = None if _pp is None else (_pp[3] if _pp[3] is not None else _pp[2])
+        _warn = _pl is not None and _pl >= PEAK_WARN_TH
         # sofar_minus_now 由 build_feats 一律计算（不受 flag 控制），所以
         # 9/12/13 时虽然模型里没这一项，这里照样拿得到
         conf = _exceed(cutoff, rise, f.get("sofar_minus_now"))
@@ -946,6 +1004,23 @@ def main() -> int:
         if (p90 is not None and _pe is not None and _pe < 0.10
                 and round(p90) > round(msf)):
             p90 = max(round(msf), shown)
+        # **⚠ 晚见顶风险的站不许印「不排除 == 预报」。** 2026-08-22 加。
+        #
+        # 「不排除」是 90 分位，契约是被实际值超过 <=10%。按分组实测（32254 行，
+        # 只看印出来恰好等于「预报」的那些行）:
+        #     非⚠   5567 行   实际 > 预报  7.0%   —— 在契约内
+        #     ⚠      865 行   实际 > 预报 20.3%   —— **超契约两倍**
+        #                     （14 时 27.8% / 11 时 27.3% / 15 时 14.7%）
+        # 也就是屏幕上写着「没有上行空间」，而这批站每五次有一次真的更高。
+        # 而且方向是死的: 15 时按实际见顶档分，晚见顶时 93.7% 是报低、
+        # 83.3% 恰好低 1 度、报高 0% —— 抬一档正好覆盖主峰。
+        #
+        # 双向验证（标准窗口对半切）: ⚠ 组覆盖 92.3%->94.0% / 91.3%->93.3%，
+        # 代价是 8.0~8.7% 的 ⚠ 行被白抬一度（实际没超过预报）。
+        # **只抬到 预报+1，不放开上面那条压制** —— 那条是 2026-08-20 为
+        # 「深圳降温日还在往上报」加的，非⚠ 组它标定得很好（7.0%），不能动。
+        if p90 is not None and _warn and round(p90) <= shown:
+            p90 = shown + 1
         pc = (F.R(round(p90) if p90 is not None else "--", W_P90)
               if args.p90 else "")
         # 「可下手」—— 这个站现在就能定下来吗。**不改任何预报值。**
@@ -1010,9 +1085,9 @@ def main() -> int:
         _e = _edge(stn, rise, shown)
         if _e and _e[4] >= 0.25:
             _edges.append((stn, shown, _e))
-        _adv, _cov = _bucket_advice(cutoff, rise, shown)
+        _adv, _cov, _forced = _bucket_advice(cutoff, rise, shown, _pl)
         if _adv:
-            _advice.append((stn, _adv, _cov, rise))
+            _advice.append((stn, _adv, _cov, rise, _forced))
 
     if _edges:
         print(f"\n── 高优势清单（我们有把握、而隔夜预报大概率错）")
@@ -1034,13 +1109,18 @@ def main() -> int:
         _AW = (16, 20, 12)
         print("  " + F.L("站点", _AW[0]) + F.L("买哪几档", _AW[1])
               + F.L("历史覆盖", _AW[2]) + "备注")
-        for stn, adv, cov, rise in _advice:
-            note = ("已定，一档足够" if "," not in adv else
+        for stn, adv, cov, rise, forced in _advice:
+            note = ("⚠ 晚见顶风险，第二档保底" if forced else
+                    "已定，一档足够" if "," not in adv else
                     ("剩余升幅大，可考虑三档" if "三档" in adv else "误差偏低，第二档往上买"))
             print("  " + F.L(f"{stn} {N.NAMES.get(stn,'')}", _AW[0])
                   + F.L(adv, _AW[1]) + F.L(cov, _AW[2]) + note)
         print(f"  依据: 12 时实测 只买点预报 47-48%，买「点预报+上一档」71-73%，"
               f"±1 三档 90%。第二档往上买比往下买多 7 个百分点。")
+        if any(a[4] for a in _advice):
+            print(f"  标「⚠ 晚见顶风险」的站本来会建议一档 —— 那一格 88% 的覆盖是"
+                  f"全体站日的平均值，⚠ 那 1/4 实测只有 73~81%。双向验证改两档后"
+                  f"到 96.4%/99.0%（+23.7pt/+17.6pt），代价是平均多买 0.01~0.02 档。")
 
     if stale:
         print(f"\n[warn] 实况滞后（截止 {cutoff} 时，标 ! 的站）:", file=sys.stderr)
@@ -1061,11 +1141,9 @@ def main() -> int:
         _BASE = 0.107          # 全站 >=16 见顶的基础率
         for _s, _e, _n, _l, _c in sorted(_peaks, key=lambda x: -x[3]):
             _use = _c if _c is not None else _l
-            # 阈值 20%: 每天亮 1.7 个站、精度 29%、召回 47%、漏 0.5 个/天。
-            # 放到 30% 只亮 0.9 个站但召回掉到 32%；40% 只剩 0.5 个站、召回 18%。
-            # **不说「极有可能」** —— 最高档实测也只有 38%。
-            _hint = ("⚠ 16 点后见顶风险偏高" if _use >= 0.20
-                     else ("基本能早早定下来" if _e >= 0.5 else ""))
+            # 门槛见 PEAK_WARN_TH。**不说「极有可能」** —— 最高档实测也只有 38%。
+            _hint = ("⚠ 16 点后见顶风险偏高" if _use >= PEAK_WARN_TH
+                     else ("基本能早早定下来" if _e >= PEAK_EARLY_TH else ""))
             print("  " + F.L(f"{_s} {N.NAMES.get(_s, '')}", _PW[0])
                   + "".join(F.R(t, x) for t, x in
                             zip((f"{_e:.0%}", f"{_n:.0%}", f"{_l:.0%}",
@@ -1080,6 +1158,9 @@ def main() -> int:
         print(f"  阈值 20%: 每天平均亮 1.7 个站，其中 29% 会真的 >=16 见顶，"
               f"能抓住全部晚见顶站的 47%，**每天仍会漏掉约 0.5 个**。"
               f"每天真正 >=16 见顶的只有约 1.07 个站，漏是必然的。")
+        print(f"  「基本能早早定下来」门槛 {PEAK_EARLY_TH:.0%}（原 50%，2026-08-22 提高）。"
+              f"样本外实测精度: 9 时 83% / 12 时 91% / 15 时 96%，标了之后真的"
+              f"拖到 >=16 见顶的只有 1.5~3.8%。**两条提示都不改预报值。**")
 
     if _shadow:
         print(f"\n── 近期偏差订正改掉的站（前 {RESID_K} 天平均残差 × {RESID_ALPHA}）")
