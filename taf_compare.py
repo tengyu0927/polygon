@@ -30,6 +30,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) or ".")
+import tablefmt as F
 import taf_bias as TB
 
 UTC = timezone.utc
@@ -99,7 +100,11 @@ def cmd_record(args):
     n = 0
     print(f"\n{'='*70}")
     print(f"MOS vs TAF（{now[:16]}Z 记录）")
-    print(f"  {'站点':<8}{'目标日':<12}{'时效':>5}{'MOS':>7}{'TAF TX':>9}{'分歧':>7}")
+    # 列宽按**显示列**算（中文双宽），表头与数据行共用。见 tablefmt.py
+    W_STN, W_DAY, W_LEAD, W_MOS, W_TAF, W_GAP = 8, 12, 5, 7, 9, 7
+    print("  " + F.L("站点", W_STN) + F.L("目标日", W_DAY)
+          + F.L("时效", W_LEAD) + F.R("MOS", W_MOS) + F.R("TAF TX", W_TAF)
+          + F.R("分歧", W_GAP))
     skipped = 0
     for r in preds:
         k = (r["station"], r["date"])
@@ -110,9 +115,10 @@ def cmd_record(args):
             skipped += 1
             continue
         gap = "" if t is None else f"{int(r['pred_round']) - t[0]:+.0f}"
-        print(f"  {r['station']:<8}{r['date']:<12}D+{r['lead']:<3}"
-              f"{r['pred_round']:>7}{('--' if t is None else f'{t[0]:.0f}'):>9}"
-              f"{gap:>7}")
+        print("  " + F.L(r["station"], W_STN) + F.L(r["date"], W_DAY)
+              + F.L(f"D+{r['lead']}", W_LEAD) + F.R(r["pred_round"], W_MOS)
+              + F.R("--" if t is None else f"{t[0]:.0f}", W_TAF)
+              + F.R(gap, W_GAP))
         conn.execute(
             "INSERT OR REPLACE INTO pair (station,target_date,lead,mos,mos_round,"
             "model_raw,taf_tx,taf_issue,recorded_utc,obs) VALUES (?,?,?,?,?,?,?,?,?,"

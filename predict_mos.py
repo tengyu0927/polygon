@@ -36,6 +36,7 @@ import train_mos as T                  # noqa: E402
 CST = timezone(timedelta(hours=8))
 
 import stations as _S  # 站点清单唯一真相源
+import tablefmt as F     # 显示宽度对齐（中文双宽）
 NAMES = _S.NAMES
 
 
@@ -241,7 +242,10 @@ def main() -> int:
                 continue
             issue = tgt - timedelta(days=lead)
             print(f"\n── D+{lead}（{issue} 起报，时效约 {lead*24} 小时）")
-            print(f"  {'站点':<14}{'预报':>7}{'模式原始':>10}{'订正':>8}   备注")
+            # 列宽按**显示列**算（中文双宽），表头与数据行共用。见 tablefmt.py
+            W_STN, W_VAL, W_RAW, W_COR = 16, 7, 10, 8
+            print("  " + F.L("站点", W_STN) + F.R("预报", W_VAL)
+                  + F.R("模式原始", W_RAW) + F.R("订正", W_COR) + "   备注")
             any_ok = False
             for stn in stations:
                 row, note = make_row(stn, tgt, lead, daily[lead], obs)
@@ -299,8 +303,9 @@ def main() -> int:
                         row["deb_trust"] = dt_
                         row["deb_minus_gfs"] = dp - row["temperature_2m_max"]
                 if row is None:
-                    print(f"  {stn} {NAMES.get(stn, ''):<9}{'--':>7}"
-                          f"{'--':>10}{'--':>8}   {note}")
+                    print("  " + F.L(f"{stn} {NAMES.get(stn, '')}", W_STN)
+                          + F.R("--", W_VAL) + F.R("--", W_RAW)
+                          + F.R("--", W_COR) + f"   {note}")
                     continue
                 try:
                     fin, raw, corr, tag = predict(
@@ -313,8 +318,9 @@ def main() -> int:
                     "" if row["recent_bias"] is not None else "无 recent_bias")
                 if args.verbose:
                     extra += f" | {tag}模型 | rb={row['recent_bias']}"
-                print(f"  {stn} {NAMES.get(stn, ''):<9}{round(fin):>7}"
-                      f"{raw:>10.1f}{corr:>+8.1f}   {extra}")
+                print("  " + F.L(f"{stn} {NAMES.get(stn, '')}", W_STN)
+                      + F.R(round(fin), W_VAL) + F.R(f"{raw:.1f}", W_RAW)
+                      + F.R(f"{corr:+.1f}", W_COR) + f"   {extra}")
                 rows_out.append((lead, stn, tgt.isoformat(), round(fin, 2),
                                  round(fin), round(raw, 2), round(corr, 2)))
             if not any_ok:

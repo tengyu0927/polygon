@@ -46,26 +46,9 @@ from datetime import date, datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) or ".")
 import stations as _S                      # noqa: E402
 import train_nowcast as N                  # noqa: E402
+from tablefmt import L, R, w                # noqa: E402  显示宽度对齐，见那里
 
 HERE = os.path.dirname(os.path.abspath(__file__)) or "."
-
-
-def w(s: str) -> int:
-    """字符串在终端里占几列。**中文是双宽的**，而 f-string 的 :<9 按字符数补，
-    不按显示宽度 —— 站名 4 个汉字算 4 字符却占 8 列，表头「站点」2 字符占 4 列，
-    直接用 f-string 对齐必然歪。"""
-    import unicodedata
-    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in s)
-
-
-def L(s, n):
-    """左对齐到 n 显示列。"""
-    return s + " " * max(0, n - w(s))
-
-
-def R(s, n):
-    """右对齐到 n 显示列。"""
-    return " " * max(0, n - w(s)) + s
 
 
 CUTS = [9, 10, 11, 12, 13, 14, 15, 16, 17]

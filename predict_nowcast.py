@@ -29,6 +29,7 @@ from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) or ".")
 import stations as _S                     # noqa: E402  站点清单唯一真相源
+import tablefmt as F                       # noqa: E402  显示宽度对齐（中文双宽）
 import train_mos as T                      # noqa: E402
 import train_nowcast as N                  # noqa: E402
 
@@ -394,11 +395,19 @@ def main() -> int:
     print(f"\n{'='*70}")
     print(f"临近预报  目标日 {tgt}  截止 {cutoff:02d} 时（北京时）  "
           f"{src}")
-    p90_col = f"{'不排除':>8}" if args.p90 else ""
-    _hdr_eh = f"{'预期命中':>7}" if os.path.exists(
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "hit_table.json")) else ""
-    print(f"\n  {'站点':<14}{'预报':>7}{p90_col}{'已达':>7}{'预计再升':>10}"
-          f"{_hdr_eh}{'更高?':>7}{'可下手':>8}{'一致?':>7}{'实况':>9}   备注")
+    # 列宽一律按**显示列**算，表头和数据行共用同一组常量。别再用 f-string 的
+    # `:<14`/`:>7` —— 那按字符数补，汉字占两列，每张表都会歪。见 tablefmt.py。
+    W_STN, W_VAL, W_P90, W_RISE = 16, 7, 8, 10
+    W_HIT, W_UP, W_RDY, W_AGR, W_OBS = 9, 7, 8, 7, 9
+    # 「预期命中」整列的有无必须与数据格同一个判据，否则表头有列、格子空着又歪。
+    _has_hit = os.path.exists(
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "hit_table.json"))
+    print("\n  " + F.L("站点", W_STN) + F.R("预报", W_VAL)
+          + (F.R("不排除", W_P90) if args.p90 else "")
+          + F.R("已达", W_VAL) + F.R("预计再升", W_RISE)
+          + (F.R("预期命中", W_HIT) if _has_hit else "")
+          + F.R("更高?", W_UP) + F.R("可下手", W_RDY) + F.R("一致?", W_AGR)
+          + F.R("实况", W_OBS) + "   备注")
 
     # 迟滞用的上一轮报出去的整数。报的是整数，连续值在 x.5 附近抖 0.02 度就会
     # 让整数翻个个儿 —— 15 个月回测里 61% 的逐小时改动是这种空转（动出去又回来）。
@@ -757,10 +766,15 @@ def main() -> int:
         s = "WU" if stn in WU_STATIONS else ("AWC" if args.live else "库")
         hh = [h for h in (hrs or {}) if h <= cutoff]
         if not hh:
-            return s, None, f"{s + ' --':>9}"
+            return s, None, F.R(f"{s} --", W_OBS)
         last = max(hh)
         lag = cutoff - last
-        return s, lag, f"{s + ' ' + str(last) + '时' + ('!' if lag >= 1 else ''):>9}"
+        return s, lag, F.R(f"{s} {last}时{'!' if lag >= 1 else ''}", W_OBS)
+    # 出不了数的行也要把每一列都占满，否则「实况」「备注」会顶到前面去
+    _dash = (F.R("--", W_VAL) + (F.R("--", W_P90) if args.p90 else "")
+             + F.R("--", W_VAL) + F.R("--", W_RISE)
+             + (F.R("--", W_HIT) if _has_hit else "")
+             + F.R("--", W_UP) + F.R("--", W_RDY) + F.R("--", W_AGR))
     stale = []
     for stn in stations:
         hrs = days.get((stn, tgt.isoformat()))
@@ -768,14 +782,14 @@ def main() -> int:
         if _lag is not None and _lag >= 1:
             stale.append((stn, _s, cutoff - _lag, _lag))
         if not hrs:
-            print(f"  {stn} {N.NAMES.get(stn,''):<9}{'--':>7}{'--':>7}{'--':>10}"
-                  f"{_otag}   无今日观测")
+            print("  " + F.L(f"{stn} {N.NAMES.get(stn,'')}", W_STN) + _dash
+                  + _otag + "   无今日观测")
             continue
         o = N.morning(hrs, cutoff)
         if o is None:
             n = len([h for h in hrs if h <= cutoff])
-            print(f"  {stn} {N.NAMES.get(stn,''):<9}{'--':>7}{'--':>7}{'--':>10}"
-                  f"{_otag}   截止前仅 {n} 条观测，不足")
+            print("  " + F.L(f"{stn} {N.NAMES.get(stn,'')}", W_STN) + _dash
+                  + _otag + f"   截止前仅 {n} 条观测，不足")
             continue
 
         ph = days.get((stn, prv.isoformat()))
@@ -916,7 +930,8 @@ def main() -> int:
         # 9/12/13 时虽然模型里没这一项，这里照样拿得到
         conf = _exceed(cutoff, rise, f.get("sofar_minus_now"))
         eh = _exp_hit(cutoff, rise, _pp[2] if _pp is not None else None)
-        ehs = f"{eh:>7.0%}" if eh is not None else ""
+        ehs = (F.R(f"{eh:.0%}" if eh is not None else "", W_HIT)
+               if _has_hit else "")
         _ai = _alt_int(f, msf, stn)
         agr = "" if _ai is None else ("一致" if _ai == shown else f"分歧{_ai}")
         # 「不排除」与「更高?」必须自洽: **超过已达的概率 < 10%，90 分位就不该
@@ -931,8 +946,8 @@ def main() -> int:
         if (p90 is not None and _pe is not None and _pe < 0.10
                 and round(p90) > round(msf)):
             p90 = max(round(msf), shown)
-        pc = (f"{round(p90):>8}" if p90 is not None
-              else (f"{'--':>8}" if args.p90 else ""))
+        pc = (F.R(round(p90) if p90 is not None else "--", W_P90)
+              if args.p90 else "")
         # 「可下手」—— 这个站现在就能定下来吗。**不改任何预报值。**
         #
         # 把握 = max(已见顶概率, 1 - 超越概率)。两条路都指向同一件事:
@@ -979,11 +994,12 @@ def main() -> int:
         # `_sp` 为 None 时（9/15 时没有已见顶判别器）退化成「只用 1-超越」。
         _rdy = min(_sp if _sp is not None else 1.0,
                    (1.0 - _pe) if _pe is not None else 0.0)
-        rc = ("      --" if _rdy <= 0 else
-              (f"{'✓ ' + format(_rdy, '.0%'):>8}" if _rdy >= READY_TH
-               else f"{_rdy:>8.0%}"))
-        print(f"  {stn} {N.NAMES.get(stn,''):<9}{shown:>7}{pc}{msf:>7.0f}"
-              f"{rise:>+10.1f}{ehs}{conf:>7}{rc}{agr:>7}{_otag}   {note}")
+        rc = F.R("--" if _rdy <= 0 else
+                 (f"✓ {_rdy:.0%}" if _rdy >= READY_TH else f"{_rdy:.0%}"), W_RDY)
+        print("  " + F.L(f"{stn} {N.NAMES.get(stn,'')}", W_STN)
+              + F.R(shown, W_VAL) + pc + F.R(f"{msf:.0f}", W_VAL)
+              + F.R(f"{rise:+.1f}", W_RISE) + ehs + F.R(conf, W_UP) + rc
+              + F.R(agr, W_AGR) + _otag + f"   {note}")
         rows_out.append((stn, shown, msf, rise))
         if _pp is not None:
             _peaks.append((stn, *_pp))
@@ -1000,20 +1016,29 @@ def main() -> int:
 
     if _edges:
         print(f"\n── 高优势清单（我们有把握、而隔夜预报大概率错）")
-        print(f"  {'站点':<14}{'我们':>5}{'隔夜':>6}{'一档':>7}{'两档':>7}{'隔夜命中':>9}{'优势':>7}")
+        _EW = (16, 6, 6, 7, 7, 9, 7)
+        print("  " + F.L("站点", _EW[0])
+              + "".join(F.R(t, x) for t, x in
+                        zip(("我们", "隔夜", "一档", "两档", "隔夜命中", "优势"),
+                            _EW[1:])))
         for stn, sh, (d1, o1, o2, dh, adv) in sorted(_edges, key=lambda x: -x[2][4]):
-            print(f"  {stn} {N.NAMES.get(stn,''):<9}{sh:>5}{d1:>6}{o1:>7.0%}{o2:>7.0%}"
-                  f"{dh:>9.0%}{adv:>+7.0%}")
+            print("  " + F.L(f"{stn} {N.NAMES.get(stn,'')}", _EW[0])
+                  + "".join(F.R(t, x) for t, x in
+                            zip((sh, d1, f"{o1:.0%}", f"{o2:.0%}",
+                                 f"{dh:.0%}", f"{adv:+.0%}"), _EW[1:])))
         print(f"  盘口若锚定隔夜预报，这些站的价格最可能是错的。"
               f"没列出的站要么与隔夜一致（无优势），要么我们自己也没把握。")
 
     if _advice:
         print(f"\n── 档位配置建议（盘口分档时用；**不改上面的预报值**）")
-        print(f"  {'站点':<14}{'买哪几档':<18}{'历史覆盖':<12}备注")
+        _AW = (16, 20, 12)
+        print("  " + F.L("站点", _AW[0]) + F.L("买哪几档", _AW[1])
+              + F.L("历史覆盖", _AW[2]) + "备注")
         for stn, adv, cov, rise in _advice:
             note = ("已定，一档足够" if "," not in adv else
                     ("剩余升幅大，可考虑三档" if "三档" in adv else "误差偏低，第二档往上买"))
-            print(f"  {stn} {N.NAMES.get(stn,''):<9}{adv:<18}{cov:<12}{note}")
+            print("  " + F.L(f"{stn} {N.NAMES.get(stn,'')}", _AW[0])
+                  + F.L(adv, _AW[1]) + F.L(cov, _AW[2]) + note)
         print(f"  依据: 12 时实测 只买点预报 47-48%，买「点预报+上一档」71-73%，"
               f"±1 三档 90%。第二档往上买比往下买多 7 个百分点。")
 
@@ -1027,8 +1052,12 @@ def main() -> int:
 
     if _peaks:
         print(f"\n── 16 点后见顶的风险（**不改上面的预报值**）")
-        print(f"  {'站点':<16}{'早<13时':>9}{'正常13-15':>11}{'晚>=16时':>10}"
-              f"{'校准后':>8}{'倍数':>7}   提示")
+        _PW = (16, 9, 11, 10, 8, 7)
+        print("  " + F.L("站点", _PW[0])
+              + "".join(F.R(t, x) for t, x in
+                        zip(("早<13时", "正常13-15", "晚>=16时", "校准后", "倍数"),
+                            _PW[1:]))
+              + "   提示")
         _BASE = 0.107          # 全站 >=16 见顶的基础率
         for _s, _e, _n, _l, _c in sorted(_peaks, key=lambda x: -x[3]):
             _use = _c if _c is not None else _l
@@ -1037,8 +1066,11 @@ def main() -> int:
             # **不说「极有可能」** —— 最高档实测也只有 38%。
             _hint = ("⚠ 16 点后见顶风险偏高" if _use >= 0.20
                      else ("基本能早早定下来" if _e >= 0.5 else ""))
-            print(f"  {_s} {N.NAMES.get(_s, '')[:6]:<10}{_e:>9.0%}{_n:>11.0%}"
-                  f"{_l:>10.0%}{_use:>8.0%}{_use / _BASE:>6.1f}倍   {_hint}")
+            print("  " + F.L(f"{_s} {N.NAMES.get(_s, '')}", _PW[0])
+                  + "".join(F.R(t, x) for t, x in
+                            zip((f"{_e:.0%}", f"{_n:.0%}", f"{_l:.0%}",
+                                 f"{_use:.0%}", f"{_use / _BASE:.1f}倍"), _PW[1:]))
+                  + f"   {_hint}")
         print(f"  分档: 早=<13 时 / 正常=13-15 时 / **晚=>=16 时**。"
               f"15 点见顶不算晚 —— 15 时那轮（15:15 起报）看得到 15:00 的观测、"
               f"抓得住；16/17 点见顶时所有轮次都结束了，必然漏。")
@@ -1051,9 +1083,12 @@ def main() -> int:
 
     if _shadow:
         print(f"\n── 近期偏差订正改掉的站（前 {RESID_K} 天平均残差 × {RESID_ALPHA}）")
-        print(f"  {'站点':<16}{'订正前':>8}{'订正后':>8}")
+        _RW = (16, 8, 8)
+        print("  " + F.L("站点", _RW[0]) + F.R("订正前", _RW[1])
+              + F.R("订正后", _RW[2]))
         for _s, _a, _b2 in _shadow:
-            print(f"  {_s} {N.NAMES.get(_s, '')[:6]:<10}{_a:>8}{_b2:>8}")
+            print("  " + F.L(f"{_s} {N.NAMES.get(_s, '')}", _RW[0])
+                  + F.R(_a, _RW[1]) + F.R(_b2, _RW[2]))
         print(f"  依据: 双向验证各 +0.95pt（P=91.0%/89.2%），"
               f"k 从 3 到 30、α 从 0.2 到 0.6 两半全部为正。**只在 9 时**，"
               f"10-15 时实测不稳或为负。")

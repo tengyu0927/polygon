@@ -46,6 +46,7 @@ from datetime import date, datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) or ".")
 import stations as _S                      # noqa: E402
+import tablefmt as F                       # noqa: E402  显示宽度对齐（中文双宽）
 
 CST = timezone(timedelta(hours=8))
 HERE = os.path.dirname(os.path.abspath(__file__)) or "."
@@ -98,15 +99,22 @@ def main() -> int:
     H = hourly(a.db, tgt)
 
     print(f"临近预报  目标日 {tgt}  截止 {a.cutoff:02d} 时（北京时）  直接报已达")
-    print(f"\n  {'站点':<14}{'预报':>7}{'不排除':>8}{'已达':>7}{'预计再升':>10}"
-          f"{'更高?':>7}{'可下手':>8}{'实况':>9}   备注")
+    # 列宽按**显示列**算（中文双宽），表头与数据行共用。见 tablefmt.py。
+    # 这几个宽度与 predict_nowcast.py 主表同名列一致 —— 两张表要能上下对齐。
+    W_STN, W_VAL, W_P90, W_RISE, W_UP, W_RDY, W_OBS = 16, 7, 8, 10, 7, 8, 9
+    print("\n  " + F.L("站点", W_STN) + F.R("预报", W_VAL)
+          + F.R("不排除", W_P90) + F.R("已达", W_VAL) + F.R("预计再升", W_RISE)
+          + F.R("更高?", W_UP) + F.R("可下手", W_RDY) + F.R("实况", W_OBS)
+          + "   备注")
 
     n_stale = 0
     for s in want:
         v = {h: t for h, t in (H.get(s) or {}).items() if h <= a.cutoff}
         if len(v) < 5:
-            print(f"  {s} {_S.NAMES.get(s, ''):<8}{'--':>7}{'--':>8}{'--':>7}"
-                  f"{'--':>10}{'--':>7}{'--':>8}{'--':>9}   实况不足")
+            print("  " + F.L(f"{s} {_S.NAMES.get(s, '')}", W_STN)
+                  + "".join(F.R("--", x) for x in
+                            (W_VAL, W_P90, W_VAL, W_RISE, W_UP, W_RDY, W_OBS))
+                  + "   实况不足")
             continue
         last = max(v)
         msf = max(v.values())
@@ -122,9 +130,11 @@ def main() -> int:
         # 「可下手」与 predict_nowcast 同口径: 1-超越概率 >= 0.95 就标 ✓。
         # 16 时约八成站、17 时几乎全部站会到 ✓。
         rdy = 1.0 - p_up
-        rc = (f"{'✓ ' + format(rdy, '.0%'):>8}" if rdy >= 0.95 else f"{rdy:>8.0%}")
-        print(f"  {s} {_S.NAMES.get(s, ''):<8}{pred:>7}{hi:>8}{msf:>7.0f}"
-              f"{0.0:>10.1f}{p_up:>7.0%}{rc}{v[last]:>9.0f}   {note}")
+        rc = F.R(f"✓ {rdy:.0%}" if rdy >= 0.95 else f"{rdy:.0%}", W_RDY)
+        print("  " + F.L(f"{s} {_S.NAMES.get(s, '')}", W_STN)
+              + F.R(pred, W_VAL) + F.R(hi, W_P90) + F.R(f"{msf:.0f}", W_VAL)
+              + F.R("0.0", W_RISE) + F.R(f"{p_up:.0%}", W_UP) + rc
+              + F.R(f"{v[last]:.0f}", W_OBS) + f"   {note}")
 
     print(f"\n  {a.cutoff} 时不跑模型 —— 那时「还会不会再升」已几乎没有不确定性，"
           f"报已达即为完美上界。")
