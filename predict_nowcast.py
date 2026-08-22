@@ -741,15 +741,27 @@ def main() -> int:
                   file=sys.stderr)
 
     def _peak_prob(f, med_, names_):
-        """返回 (早, 正常, 晚, 校准后的晚)。缺模型/缺 sklearn 返回 None。"""
+        """返回 (早, 正常, 晚, 校准后的晚)。缺模型/缺 sklearn 返回 None。
+
+        「早」这一维**优先返回校准值**（edges_e/cal_e，2026-08-22 加）。
+        重训之前的 pkl 里没有这两个键，那时退回原始概率 —— 那个数在早时次
+        过度自信 10~14 个百分点，见 train_nowcast.fit_peak_prob。
+        """
         if _PEAK is None:
             return None
         Xp, _ = N.matrix([{"f": f}], med_, names_)
         p = _PEAK["clf"].predict_proba(_NP.asarray(Xp, float))[0]
-        i = next((k for k, e in enumerate(_PEAK["edges"]) if p[2] < e),
-                 len(_PEAK["edges"]))
-        c = _PEAK["cal"][i] if i < len(_PEAK["cal"]) else None
-        return float(p[0]), float(p[1]), float(p[2]), c
+
+        def _lookup(v, ek, ck):
+            eg, cl = _PEAK.get(ek), _PEAK.get(ck)
+            if not eg or not cl:
+                return None
+            i = next((k for k, e in enumerate(eg) if v < e), len(eg))
+            return cl[i] if i < len(cl) else None
+
+        pe = _lookup(p[0], "edges_e", "cal_e")
+        return (float(pe if pe is not None else p[0]), float(p[1]), float(p[2]),
+                _lookup(p[2], "edges", "cal"))
 
     # 「已见顶」判别器（<model>.settled.pkl）。判定天已过完就把预报改成
     # 已达值 —— 见 train_nowcast.fit_settled。只在 10-14 时有，9/15 时没有。

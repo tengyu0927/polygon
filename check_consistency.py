@@ -488,15 +488,22 @@ def check_contracts(args):
     # 「见顶时刻」判别器（<model>.peak.pkl）。它用主模型的 names/median 训，
     # 主模型一变就必须重训（--peak-only），否则 matrix() 填缺值的基准对不上，
     # 而且**不会报错**，只是概率悄悄失真。这里校验特征数与主模型一致。
-    _pkp = args.nowcast_model + ".peak.pkl"
-    if os.path.exists(_pkp):
+    # **两个模型都要查。** 2026-08-22 前这里只查 nowcast_model（9-14 时），
+    # 15 时的 nowcast_late.json.peak.pkl 不在范围内 —— 于是「它训好落盘了，
+    # 但生产因为缺 GBM 边文件而根本没读过」这个 bug 活了一直没被抓到。
+    _any_pk = False
+    for _mp in (args.nowcast_model, args.nowcast_late_model):
+        _pkp = _mp + ".peak.pkl"
+        if not os.path.exists(_pkp):
+            continue
+        _any_pk = True
         try:
             import pickle as _pk9
             _pm = _pk9.load(open(_pkp, "rb"))
         except Exception:                              # noqa: BLE001
             _pm = {}
-        _spec = json.load(open(args.nowcast_model, encoding="utf-8"))
-        rep(bool(_pm), "peak.pkl 读得出来", f"时次 {sorted(_pm)}")
+        _spec = json.load(open(_mp, encoding="utf-8"))
+        rep(bool(_pm), f"{os.path.basename(_pkp)} 读得出来", f"时次 {sorted(_pm)}")
         for _c in sorted(_pm):
             # matrix() 每个特征产两列（值 + 缺失标记），所以是 2×names
             _n_model = 2 * len(_spec.get(str(_c), {}).get("names", []))
@@ -504,12 +511,20 @@ def check_contracts(args):
             rep(_n_clf == _n_model, f"{_c} 时见顶判别器特征数与主模型一致",
                 f"判别器 {_n_clf} / 模型 2×{_n_model // 2}={_n_model}"
                 + ("" if _n_clf == _n_model else "  -> 主模型换过，需重跑 --peak-only"))
-            _cal = _pm[_c].get("cal") or []
-            _ok = all(a2 is not None and b2 is not None and a2 <= b2
-                      for a2, b2 in zip(_cal, _cal[1:]))
-            rep(_ok, f"{_c} 时见顶概率校准表单调",
-                str([None if x is None else round(x, 3) for x in _cal]))
-    else:
+            # 两张校准表都要单调。cal_e（早<13时）是 2026-08-22 加的 ——
+            # 还没重训的时次没有这一张，那时 predict_nowcast 退回原始概率，
+            # 只提示、不算错。
+            for _k, _lab in (("cal", "晚>=16"), ("cal_e", "早<13")):
+                _cal = _pm[_c].get(_k)
+                if _cal is None:
+                    rep(True, f"{_c} 时「{_lab}」校准表",
+                        "缺（该时次还没按新版重训，生产退回原始概率）")
+                    continue
+                _ok = all(a2 is not None and b2 is not None and a2 <= b2
+                          for a2, b2 in zip(_cal, _cal[1:]))
+                rep(_ok, f"{_c} 时「{_lab}」见顶概率校准表单调",
+                    str([None if x is None else round(x, 3) for x in _cal]))
+    if not _any_pk:
         rep(False, "peak.pkl 在（见顶时刻概率的数据源）", "缺文件 -> 该段不输出")
 
     # 追加模式的训练文件: 站点覆盖必须与 stations.ICAOS 一致，且不能太旧。

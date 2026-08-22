@@ -1074,31 +1074,50 @@ def fit_peak_prob(rows, med, names):
     # 改成按日期分块的 4 折交叉验证取样本外概率（不能随机分折，相邻日高度相关）。
     _dts = sorted({r["date"] for r in sub})
     _fold = {d: min(3, i * 4 // len(_dts)) for i, d in enumerate(_dts)}
-    p_late = _np.zeros(len(sub))
+    oof = _np.zeros((len(sub), 3))
     for k in range(4):
         te = _np.asarray([_fold[r["date"]] == k for r in sub])
         if te.sum() < 50 or (~te).sum() < 300:
-            p_late = clf.predict_proba(Xa)[:, 2]     # 折不出来就退回（会偏乐观）
+            oof = clf.predict_proba(Xa)                # 折不出来就退回（会偏乐观）
             break
-        p_late[te] = mk().fit(Xa[~te], y[~te]).predict_proba(Xa[te])[:, 2]
-    # **十档，不是五档。** 2026-08-21 踩过: 五档时 top 20% 全塌成一个数 ——
-    # 某天五个站的原始概率是 49%/34%/23%/20%/19%，差别很大却一律回填成 28%，
-    # 五个站同时标 ⚠、看不出谁更危险。十档能把最高的一两个分出来。
-    q = [float(v) for v in _np.quantile(p_late, [i / 10 for i in range(1, 10)])]
-    cal = []
-    lo = -1.0
-    for hi in q + [2.0]:
-        m_ = (p_late >= lo) & (p_late < hi)
-        cal.append(float((y[m_] == 2).mean()) if m_.sum() >= 30 else None)
-        lo = hi
-    # 校准值必须单调不减 —— 十档之后每档样本变少，个别档会因噪声反转。
-    # 相邻反转就取两者平均（保序回归的最简形式）压平。
-    for _ in range(len(cal)):
-        for j in range(len(cal) - 1):
-            if cal[j] is not None and cal[j + 1] is not None and cal[j] > cal[j + 1]:
-                _m = (cal[j] + cal[j + 1]) / 2
-                cal[j] = cal[j + 1] = _m
-    return {"clf": clf, "edges": q, "cal": cal}
+        oof[te] = mk().fit(Xa[~te], y[~te]).predict_proba(Xa[te])
+
+    def _cal(p, want):
+        """把原始概率映成十档经验频率。返回 (分位边界, 每档实测)。
+
+        **十档，不是五档。** 2026-08-21 踩过: 五档时 top 20% 全塌成一个数 ——
+        某天五个站的原始概率是 49%/34%/23%/20%/19%，差别很大却一律回填成
+        28%，五个站同时标 ⚠、看不出谁更危险。十档能把最高的一两个分出来。
+        """
+        qq = [float(v) for v in _np.quantile(p, [i / 10 for i in range(1, 10)])]
+        cc = []
+        lo = -1.0
+        for hi in qq + [2.0]:
+            m_ = (p >= lo) & (p < hi)
+            cc.append(float((y[m_] == want).mean()) if m_.sum() >= 30 else None)
+            lo = hi
+        # 校准值必须单调不减 —— 十档之后每档样本变少，个别档会因噪声反转。
+        # 相邻反转就取两者平均（保序回归的最简形式）压平。
+        for _ in range(len(cc)):
+            for j in range(len(cc) - 1):
+                if cc[j] is not None and cc[j + 1] is not None and cc[j] > cc[j + 1]:
+                    _m = (cc[j] + cc[j + 1]) / 2
+                    cc[j] = cc[j + 1] = _m
+        return qq, cc
+
+    q, cal = _cal(oof[:, 2], 2)
+    # **「早<13时」这一维也要回填。** 2026-08-22 加 —— 在此之前只有 p_late
+    # 有校准表，而「基本能早早定下来」那条提示读的是分类器原始输出。
+    # 在生产的数据量（标准窗口约 4700 站日/时次）上实测，原始概率**明显
+    # 过度自信，而且正好在最需要它的早时次**（按预测概率十档，最高一档）:
+    #     9 时  预测 80.2% -> 实测 65.8%   -14.4pt
+    #    12 时  预测 89.2% -> 实测 76.3%   -12.8pt
+    #    15 时  预测 97.6% -> 实测 95.6%    -2.1pt
+    # 15 时几乎不用校准（那时早不早见顶已由观测决定），9-12 时差一大截。
+    # 回填之后数字就等于实测: 9 时的校准值封顶在 ~66%，12 时 ~80% ——
+    # 也就是说早时次本来就没有资格说「80% 能早早定下来」。
+    q_e, cal_e = _cal(oof[:, 0], 0)
+    return {"clf": clf, "edges": q, "cal": cal, "edges_e": q_e, "cal_e": cal_e}
 
 
 # 2026-08-19 扩到 13/14/15: 除了印「今天几点见顶」，它的概率还当「预期命中」
@@ -1672,10 +1691,11 @@ def main() -> int:
                 print(f"[warn] {c} 时样本不足，判别器没建起来", file=sys.stderr)
                 continue
             got[c] = g
+            _r3 = lambda t: [None if x is None else round(x, 3) for x in t]
             print(f"  {c} 时: {len(rows)} 样本，特征 {len(spec['names'])} 项"
-                  f"（取自线上模型），校准表 "
-                  f"{[None if x is None else round(x,3) for x in g['cal']]}",
-                  file=sys.stderr)
+                  f"（取自线上模型）\n"
+                  f"      晚>=16 校准表 {_r3(g['cal'])}\n"
+                  f"      早<13  校准表 {_r3(g['cal_e'])}", file=sys.stderr)
         if got:
             import pickle
             with open(args.peak_only + ".peak.pkl", "wb") as fh:
