@@ -765,6 +765,16 @@ def make_samples(days, cutoff, clim_r, clim_p, nwp_map, split_year, m2_maps=()):
         if m2_maps:
             add_m2_feats(f, msf, [mm.get((stn, d)) for mm in m2_maps])
         add_interactions(f)
+        if ORACLE_SKY:
+            # **明知泄漏的先知实验**，只用来量「午后天空状况不确定」值多少。
+            # 只取**截止时刻之后**的小时 —— 上午那段模型本来就知道，
+            # 算进来会高估先知的价值。
+            _pm = [v for h, v in hrs.items() if cutoff < h <= PEAK_H1]
+            _cl = [v["cld"] for v in _pm if v["cld"] is not None]
+            f["oracle_cloud_pm"] = sum(_cl) / len(_cl) if _cl else None
+            f["oracle_cloud_min"] = min(_cl) if _cl else None
+            f["oracle_ts_pm"] = float(any(v["ts"] for v in _pm)) if _pm else None
+            f["oracle_ra_pm"] = float(any(v["ra"] for v in _pm)) if _pm else None
         tmax = max(v["t"] for v in hrs.values())
         # 当天实际见顶时刻。只当辅助模型的训练目标用，绝不进 FEATS ——
         # 它是未来信息，混进主模型就是泄漏
@@ -813,6 +823,23 @@ def make_samples(days, cutoff, clim_r, clim_p, nwp_map, split_year, m2_maps=()):
                 None if ph is None else float(ph) - cutoff)
     return out
 
+
+# 先知午后天空（PLOYGON_ORACLE_SKY=1）。**明知泄漏，只测天花板，绝不可上线。**
+#
+# 要回答的问题: 部署管线 12 时完全命中 49.96%，纯观测序列的天花板约 40%
+# （README 的类比实验: 上午曲线几乎一样的日子，日最高温标准差仍有 1.30℃）。
+# 那 10 个百分点是模式给的 —— 模式对**下午云量与辐射**的预报。但模式自己
+# 也错。把当天**实测**的午后天空直接喂进去，就量出这条通道还剩多少空间:
+#     先知版到 70%+  -> 还有 20pt 躺在「更好的模式数据」里，值得继续投
+#     先知版只到 55% -> 模式这条路快到头了，别再投
+#
+# 用的是 METAR 的 skyc1/wxcodes，**只有最低那一层云**（低层 FEW 配高层 OVC
+# 会读成 FEW），所以这是**下界**，真实上限只会更高。深圳/济南走 WU、没有
+# skyc1，这两站在本实验里全是缺测。
+ORACLE_SKY = os.environ.get("PLOYGON_ORACLE_SKY") == "1"
+if ORACLE_SKY:
+    FEATS.extend(["oracle_cloud_pm", "oracle_cloud_min",
+                  "oracle_ts_pm", "oracle_ra_pm"])
 
 ORACLE_PEAK = os.environ.get("PLOYGON_ORACLE_PEAK") == "1"
 ORACLE_NOISE = float(os.environ.get("PLOYGON_ORACLE_NOISE") or 0.0)

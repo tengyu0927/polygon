@@ -244,7 +244,9 @@ def check_mos(args):
     # 模型里被否的，加了 GBM 之后一起重测，9/10 时 -0.0372 / -0.0270（P 均 100%）。
     # 同一批要素单独线性加是 +0.0068(P=0%)、非线性里是负 —— 结论会随模型结构翻转。
     # 仍在黑名单里的:
-    #   oracle_*  明知泄漏，永远不许上线
+    #   oracle_*  明知泄漏，永远不许上线。**按前缀挡** —— 写死名字的话，
+    #             以后每加一族先知特征都要记得同步，早晚漏。
+    #             现有两族: 见顶时刻(ORACLE_PEAK)、午后天空(ORACLE_SKY)
     #   pk_p_late 见顶时刻辅助模型的输出，未通过 A/B
     #   x1_/x2_   跨站: 训练端能算、**预测端逐站循环产不出来**，
     #             2026-08-06 被 [1] 的逐列比对当场抓到，故仍禁止
@@ -252,9 +254,13 @@ def check_mos(args):
     #             MOS 序列测出 9/10 时 P=99.4%/99.9%，换成与生产同口径的逐月
     #             滚动序列后，10 时（原本最强）直接归零（+0.0027, P=30%），
     #             11 时显著更差。详见 README。
-    rejected = ({"oracle_peak_h", "oracle_hours_to_peak", "pk_p_late"}
-                | set(TN.xstn_feature_names()) | set(TN.MOSF_FEATS)
-                | set(TN.SONDE_FEATS))
+    # **oracle_ 按前缀挡，不要写死名字。** 2026-08-22 加 ORACLE_SKY 时发现:
+    # 原来这里列的是 oracle_peak_h / oracle_hours_to_peak 两个具体名字，
+    # 新加一族先知特征就会直接漏网 —— 而先知特征上线等于用未来信息预报，
+    # 是这份检查里后果最重的一条。
+    rejected = ({"pk_p_late"} | set(TN.xstn_feature_names())
+                | set(TN.MOSF_FEATS) | set(TN.SONDE_FEATS))
+    _pref = ("oracle_",)
     for path, tag in ((args.nowcast_model, "临近预报模型"),
                       (args.nowcast_late_model, "临近预报晚时次模型")):
         if not os.path.exists(path):
@@ -262,7 +268,8 @@ def check_mos(args):
         nc = json.load(open(path, encoding="utf-8"))
         nc_feats = {f for blk in nc.values() if isinstance(blk, dict)
                     for f in (blk.get("names") or blk.get("feats") or [])}
-        bad = sorted(rejected & nc_feats)
+        bad = sorted((rejected & nc_feats)
+                     | {f for f in nc_feats if f.startswith(_pref)})
         rep(not bad, f"被否决的实验特征没混进{tag}",
             "" if not bad else f"泄漏: {bad}")
 
