@@ -147,13 +147,6 @@ if [[ -z "$NOFETCH" ]]; then
         USE_LIVE=--live
     fi
 
-    # 前瞻记录「这个时刻实际能取到的最新一轮模式」。不参与预报，
-    # 只为判定 previous_day0 能不能拿来训练（见 run0_probe.py 的说明）。
-    # 失败不影响本轮预报。
-    if [[ -z "$NOSIDE" ]]; then
-        python3 run0_probe.py --db run0_probe.sqlite --cutoff "$HOUR" --log >/dev/null 2>&1 || true
-    fi
-
     # 这里**不**再重建 mos_*.csv。predict_nowcast.py 的模式特征是自己联网取的
     # （fetch_nwp / fetch_m2），压根不读 csv —— 每小时重建一遍纯属浪费:
     # 多花约 1 分钟、API 请求翻倍、对预报没有任何影响。
@@ -171,6 +164,17 @@ fi
             ${ONLY:+--stations "$ONLY"}
     fi
 } 2>&1 | tee -a "$LOG"
+
+# 前瞻记录「这个时刻实际能取到的最新一轮模式」。**不参与预报。**
+#
+# 2026-08-22 从预报之前挪到预报之后。判定已经出了结果（历史接口一致率只有
+# 45%，见 run0_probe.py 文档），所以采集从「1 个模式的 t2m」扩到「7 个模式
+# 的 11 个变量」—— 那是**每轮 7 次 API 请求**，最坏情况超时叠加能拖十分钟。
+# 它跑在预报前面就会把 :15 那一轮往后推，而它对本轮预报毫无用处。
+# 放到后面，抢不到也只是今天少攒一轮数据。
+if [[ -z "$NOSIDE" ]]; then
+    python3 run0_probe.py --db run0_probe.sqlite --cutoff "$HOUR" --log >/dev/null 2>&1 || true
+fi
 
 # 集合预报采集。**只攒数据，不进任何模型** —— Open-Meteo 的集合 API 拿不到
 # 历史（见 ens_collect.py 顶部），时效也只能靠记下抓取时刻自己保证，

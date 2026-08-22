@@ -485,6 +485,28 @@ def check_contracts(args):
                                     "bucket_table.json")),
       "bucket_table.json 在（档位配置建议的数据源）")
 
+    # run0 前瞻采集的字段覆盖。**这条要攒十个月才见分晓，所以必须机器查。**
+    # 2026-08-22: 采了三周才发现旧表只存了 gfs_global 的 temperature_2m，
+    # 而模型要的是逐模式的 tmax/cloud_peak/swrad_peak —— 照那样攒满十个月，
+    # 攒完会发现一个特征都建不出来。
+    try:
+        import build_mos_dataset as _B4
+        import run0_probe as _R4
+        _need = set(_B4.VARS)
+        _miss = sorted(_need - set(_R4.VARS))
+        rep(not _miss, "run0 采集覆盖训练端要的全部模式变量",
+            f"需要 {len(_need)} 个，采了 {len(_R4.VARS)} 个"
+            + (f"  -> 缺 {_miss}" if _miss else ""))
+        # 9 时那份清单（含 AIFS）去掉 local_gfs —— 本地 GFS 走自己的归档，
+        # 不从 previous-runs 接口取，所以不该要求 probe 采它。
+        _want4 = [m for m in (a9 or a or "").split(",")
+                  if m and m != "local_gfs"]
+        _mm = [m for m in _want4 if m not in _R4.MODELS]
+        rep(not _mm, "run0 采集覆盖生产在用的全部追加模式",
+            f"采了 {len(_R4.MODELS)} 个" + (f"  -> 缺 {_mm}" if _mm else ""))
+    except Exception as _e4:                               # noqa: BLE001
+        rep(False, "run0 采集字段可检查", f"{type(_e4).__name__}: {_e4}")
+
     # 「见顶时刻」判别器（<model>.peak.pkl）。它用主模型的 names/median 训，
     # 主模型一变就必须重训（--peak-only），否则 matrix() 填缺值的基准对不上，
     # 而且**不会报错**，只是概率悄悄失真。这里校验特征数与主模型一致。
