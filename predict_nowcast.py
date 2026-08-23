@@ -924,7 +924,10 @@ def main() -> int:
             Xs, _ = N.matrix([{"f": f}], med, names)
             _sp = float(_SETTLED.predict_proba(_NP.asarray(Xs, float))[0][1])
             if _sp >= N.SETTLED_TH:
-                rise, tag = 0.0, tag + "|已见顶"
+                if N.settled_blocked(f):
+                    tag += "|已见顶(模式不认，未覆盖)"
+                else:
+                    rise, tag = 0.0, tag + "|已见顶"
         fin = msf + rise
         fin_raw = fin                                  # 影子对照用: 订正前的值
         b = _recent_bias(stn)

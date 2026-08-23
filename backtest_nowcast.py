@@ -713,8 +713,11 @@ def main() -> int:
                     Xs, _ = N.matrix(sub, smed, names)
                     import numpy as _np
                     ps = list(sm.predict_proba(_np.asarray(Xs, float))[:, 1])
-                    mean_r = [0.0 if p >= N.SETTLED_TH else v
-                              for p, v in zip(ps, mean_r)]
+                    # 闸门见 train_nowcast.settled_blocked（默认关）
+                    mean_r = [
+                        0.0 if (p >= N.SETTLED_TH
+                                and not N.settled_blocked(r["f"])) else v
+                        for p, v, r in zip(ps, mean_r, sub)]
 
                 for r, rm, rk, rw, rq, pv, r0, pk in zip(sub, mean_r, mode_r, win_r,
                                                          p90_r, ps, pre_r, pkp):
