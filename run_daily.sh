@@ -191,6 +191,13 @@ PYCHK
     # 但站级偏差稳定得多（重庆连续偏低、青岛连续偏高）
     echo
     python3 verify.py --db "${PLOYGON_VERIFY_DB:-verify.sqlite}" || true
+
+    # 「见顶时刻」两条提示的逐日记账。**只记账，不改任何预报值。**
+    # 放在这里是因为 23:59 当天峰值时段早已走完，见顶时刻是定论了
+    # （脚本自己也会拦: 观测没到 PEAK_H1 就不记）。
+    # 起因见 peak_hint_track.py 文件头 —— 头两天实测与回测口径对不上，
+    # 而这类偏差只有攒日子才能判，靠人记两周后一定记不全。
+    python3 peak_hint_track.py --log || true
 } 2>&1 | tee -a "$LOG"
 
 # 本地 GFS 归档的日常维护。**2026-08-18 加** —— 在此之前没有任何东西维护

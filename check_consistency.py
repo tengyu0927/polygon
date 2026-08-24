@@ -492,6 +492,23 @@ def check_contracts(args):
                                     "bucket_table.json")),
       "bucket_table.json 在（档位配置建议的数据源）")
 
+    # 见顶提示记账器: 它读的是 predict_nowcast 印出来的表，**格式一变就静默
+    # 解析不到**（记 0 条也不报错）。所以这里拿最近一天的日志真跑一遍解析。
+    try:
+        import datetime as _dt5
+        import peak_hint_track as _H5
+        _got = []
+        for _k in range(1, 6):
+            _d5 = (_dt5.date.today() - _dt5.timedelta(days=_k)).isoformat()
+            if os.path.exists(f"pred_{_d5}.log"):
+                _got = _H5.parse(_d5)
+                break
+        rep(bool(_got), "见顶提示记账器能解析当前日志格式",
+            f"{_d5} 解出 {len(_got)} 条标注"
+            + ("" if _got else "  -> 表格式变了？改 peak_hint_track.ROW"))
+    except Exception as _e5:                               # noqa: BLE001
+        rep(False, "见顶提示记账器可用", f"{type(_e5).__name__}: {_e5}")
+
     # run0 前瞻采集的字段覆盖。**这条要攒十个月才见分晓，所以必须机器查。**
     # 2026-08-22: 采了三周才发现旧表只存了 gfs_global 的 temperature_2m，
     # 而模型要的是逐模式的 tmax/cloud_peak/swrad_peak —— 照那样攒满十个月，
