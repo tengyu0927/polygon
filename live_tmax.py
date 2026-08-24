@@ -121,7 +121,7 @@ def fetch(stations, timeout=20, retries=3, hours=None):
         for sid in out:
             out[sid].sort(key=lambda x: x.get("obsTime") or 0)
 
-    # 这几个站必须换成 WU 的序列 —— 见下方 WU_STATIONS 说明
+    # WU 站换成 WU 的序列 —— 见下方 WU_STATIONS 说明。现在只剩济南。
     for sid in WU_STATIONS & set(stations):
         try:
             wu = fetch_wu(sid, hours or 1)
@@ -135,14 +135,18 @@ def fetch(stations, timeout=20, retries=3, hours=None):
     return out
 
 
-# 这些站看的是 WU 的序列，不是 AWC 的 METAR。
-# WU 的 ZGSZ:9:CN 返回的是 Lau Fau Shan（香港流浮山，WMO 45035），
-# 离深圳宝安 30km。最终对错以 WU 为准，模型也训练在这条序列上（见 wu_obs.py），
-# 所以这个监看窗口必须跟着换，否则你盯的当日最高温和打分用的不是一回事 ——
-# 实测 624 天里 70% 的日子对不上，26% 差 >=2℃。
-# ZSJN 是另一个原因: AWC/IEM 根本没有它的逐时观测，不走 WU 就整站没数据。
-# 跟着 stations.py 走 —— 之前这里抄了一份只有 ZGSZ 的，加济南时漏改，
-# 结果 ZSJN 一直显示「无数据」，也就一直进不了推送。
+# 这些站看的是 WU 的序列，不是 AWC 的 METAR。**现在只剩济南** ——
+# AWC/IEM 根本没有它的逐时观测（42-81 条/月），不走 WU 就整站没数据。
+#
+# **2026-08-24: 深圳移出。** 结算源换成 weather.gov（背后 Synoptic/MesoWest，
+# 供 METAR 原文）之后，ZGSZ 结算的是真的深圳宝安，而 WU 的 ZGSZ:9:CN 挂的是
+# 香港流浮山（WMO 45035）、离宝安 30km。也就是说这段逻辑的前提反过来了:
+# **现在不换才对得上结算**，换了反而盯错地方。
+# （历史记录: 换源前那两条序列 469 天里只有 29.4% 的日子日最高温相同，
+#  MAE 1.06℃ —— 所以当初"必须换"和现在"必须不换"都是对的，变的是结算源。）
+#
+# 跟着 stations.py 走，别在这里抄第二份 —— 之前这里抄了一份只有 ZGSZ 的，
+# 加济南时漏改，结果 ZSJN 一直显示「无数据」，也就一直进不了推送。
 WU_STATIONS = _S.WU_STATIONS
 
 
