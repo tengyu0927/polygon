@@ -66,6 +66,10 @@ STATION = "ZGSZ"                           # 兼容旧调用；实际按 --stati
 BACKUP_TABLE = "obs_zgsz_metar"            # 只有 ZGSZ 有 METAR 需要备份
 MIN_OBS = 18          # 一天少于这么多条就不收 —— 三小时一次的日子上午只有 2 条
 FIRST_DAY = "2024-07-10"   # 流浮山归档变密的起点，之前是 8 条/天
+# **ZGSZ 已于 2026-08-24 移出 stations.WU_STATIONS**（结算源换成 weather.gov
+# 之后它结算的是真的深圳宝安，而 WU 挂的是香港流浮山）。这里的配置保留只为
+# `--restore` 和复现历史，**别再手动 `--stations ZGSZ --update`** —— 那会把
+# 流浮山的观测重新灌回去。
 PER_STATION = {
     "ZGSZ": {"first": "2024-07-10", "min_obs": 18},
     "ZSJN": {"first": "2020-01-01", "min_obs": 18},

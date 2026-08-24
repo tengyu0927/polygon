@@ -59,10 +59,21 @@ COORD = {k: (v[1], v[2]) for k, v in _STATIONS.items()}
 CSV = ",".join(ICAOS)
 
 # 实况以 Weather Underground 为准、不能用 AWC/IEM METAR 的站。
-#   ZGSZ: WU 的 ZGSZ:9:CN 返回 Lau Fau Shan（香港流浮山，WMO 45035），
-#         而打分以 WU 为准，所以模型也训练在这条序列上（见 wu_obs.py）
-#   ZSJN: IEM 根本没有逐时数据，只能用 WU
-WU_STATIONS = {"ZGSZ", "ZSJN"}
+#
+# **2026-08-24: ZGSZ 移出。** 结算源换成了 weather.gov 的 WRH timeseries
+# （背后是 Synoptic/MesoWest，供的就是 METAR 原文），十个站里九个都改了，
+# 只有济南还是 WU。逐条核对过去 24 小时: 八个 IEM 站与新结算源**100% 相同**
+# （同一条 METAR 馈送），唯独深圳不同 —— 因为 WU 的 ZGSZ:9:CN 挂的是
+# **香港流浮山**（WMO 45035），而新结算源的 ZGSZ 是真的深圳宝安
+# （22.6393, 113.8110，与本文件坐标一致）。
+#
+# 两条序列的日最高温只有 29.4% 的日子相同、MAE 1.06℃（469 天可比）——
+# 也就是说此前深圳有七成日子在预报另一个地方。已用 wu_obs.py --restore
+# 把 obs_zgsz_metar 里备份的真实 METAR 换回来（259,092 条，1995 年起），
+# 顺带把这个站的可用历史从 2 年扩到 31 年。
+#
+#   ZSJN: IEM 根本没有逐时数据（42-81 条/月），只能用 WU
+WU_STATIONS = {"ZSJN"}
 
 
 def gfs_coord(icao):

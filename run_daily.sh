@@ -56,14 +56,17 @@ if [[ -z "$NOUPDATE" ]]; then
     python3 iem_multi.py --db cn.sqlite --stations "$STATIONS" \
         --recent-days 5 --timeout 180 >/dev/null 2>&1 \
         || echo "[warn] 实况增量更新失败，recent_bias 可能滞后" >&2
-    # WU 站（深圳=流浮山、济南=IEM 没有逐时）覆盖成 WU 序列 ——
-    # 必须在 iem_multi 之后、建日表之前
+    # WU 站（现在只剩济南 —— IEM 上它没有逐时数据）覆盖成 WU 序列 ——
+    # 必须在 iem_multi 之后、建日表之前。**2026-08-24 深圳移出**，见
+    # stations.WU_STATIONS: 结算源换成 weather.gov 后 ZGSZ 结算的是真宝安。
     python3 wu_obs.py --db cn.sqlite --update --days 5 >/dev/null 2>&1 \
-        || echo "[warn] WU 实况更新失败，ZGSZ 可能用到陈旧数据" >&2
+        || echo "[warn] WU 实况更新失败，ZSJN 可能用到陈旧数据" >&2
     python3 iem_multi.py --db cn.sqlite --daily >/dev/null 2>&1 || true
 
-    # 核对实测口径。最终对错以 WU 为准，训练/检验的实况必须和它一致 ——
-    # WU 随时可能改站点映射（2026-08-01 就发现 ZGSZ 挂的是香港流浮山）。
+    # 核对实测口径。**2026-08-24 起结算以 weather.gov 为准**（背后是
+    # Synoptic/MesoWest，供 METAR 原文，与 IEM 同源；已逐条核对十个站
+    # 100% 相同）。这里仍拿 WU 交叉核一下济南 —— 它是唯一还走 WU 的站，
+    # 而 WU 随时可能改站点映射（2026-08-01 就发现 ZGSZ 挂的是香港流浮山）。
     # 只打警告，不中断当天的预报。
     # 14 天而不是 7 天: 判据用了均值和「差≥2度的比例」，7 天里单独一天差 2 度
     # 就占 14%，会误报。14 天让单点噪声降到 7%，均值的标准误也减半。

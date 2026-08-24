@@ -136,11 +136,13 @@ if [[ -z "$NOFETCH" ]]; then
     # IEM 慢起来能挂几十分钟，而 urlopen 的 timeout 只管单次 socket 读
     if python3 iem_multi.py --db cn.sqlite --stations "$STATIONS" \
             --recent-days 2 --timeout 120 >/dev/null 2>&1; then
-        # ZGSZ 的实况以 WU 为准（WU 的 ZGSZ 页面挂的是香港流浮山，
-        # 打分也按它，所以模型训练在这条序列上）。IEM 抓回来的是深圳宝安
-        # METAR，必须覆盖掉，否则库里混进另一个站的观测。见 wu_obs.py
+        # 只有济南要覆盖成 WU 序列 —— IEM 上它没有逐时数据（42-81 条/月）。
+        # **2026-08-24: 深圳移出。** 结算源改成 weather.gov 之后，ZGSZ 结算的
+        # 是真的深圳宝安 METAR，而 WU 的 ZGSZ:9:CN 挂的是香港流浮山 ——
+        # 再覆盖就是把另一个地方的观测灌进来。见 stations.WU_STATIONS。
+        # 覆盖哪些站由 stations.WU_STATIONS 决定，这里不写死。
         python3 wu_obs.py --db cn.sqlite --update --days 2 >/dev/null 2>&1 \
-            || echo "[warn] WU 实况更新失败，ZGSZ 可能用到陈旧数据" >&2
+            || echo "[warn] WU 实况更新失败，ZSJN 可能用到陈旧数据" >&2
         python3 iem_multi.py --db cn.sqlite --daily >/dev/null 2>&1 || true
     else
         echo "[warn] IEM 实况更新失败，本轮改用 AWC 实时源（--live）" >&2
