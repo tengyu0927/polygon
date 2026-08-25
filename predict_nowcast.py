@@ -103,9 +103,30 @@ WU_STATIONS = _S.WU_STATIONS
 # ⚠「16 点后见顶风险偏高」的门槛（校准后概率）。**只有这一处定义** ——
 # 见顶风险表和「档位配置建议」的抬档例外用的必须是同一个数，两边各写一个
 # 就会出现「表里标了 ⚠、档位却还说买一档」。
-# 阈值 20%: 每天亮 1.7 个站、精度 29%、召回 47%、漏 0.5 个/天。
-# 放到 30% 只亮 0.9 个站但召回掉到 32%；40% 只剩 0.5 个站、召回 18%。
-PEAK_WARN_TH = 0.20
+# **2026-08-25: 门槛 0.20 -> 0.40，判别器同时换成 v2（分站/纯观测/满历史）。**
+#
+# 旧口径的问题是结构性的: 校准表按十分位建，「>=0.20」恰好等于最高两档，
+# 于是 ⚠ **天然在约 20% 的站日触发**，而真实晚见顶只有 11.8% ——
+# 精度上限被钉死在 25~30%，与判别器好坏无关。而且实测极不稳定
+# （前半段 32.2% / 后半段 21.7%，同一套规则差 10 个百分点）。
+#
+# v2 的样本外精度-召回（12 时，92034 站日，按年奇偶双向验证）:
+#     门槛   标注率   精度(半A→半B)      召回        每天标几个
+#     0.20   24.1%   32.3% → 32.1%   58% → 56%      1.92
+#     0.30   14.0%   38.1% → 38.0%   41% → 38%      1.12
+#     0.40    7.5%   44.5% → 43.8%   26% → 23%      0.60   <- 取这个
+#     0.50    3.8%   52.5% → 49.4%   16% → 13%      0.30
+#     0.60    1.9%   58.6% → 57.3%    8% →  8%      0.15
+# **两个半段差不到 1 个百分点** —— 旧判别器差 10pt，稳定性本身就是大改善。
+#
+# 取 0.40 的理由: 精度 44% 是「标了值得当回事」的下限，每天 0.6 个的量
+# 也不会淹没使用者。代价是召回从 57% 掉到 25% —— **四个晚见顶站会漏掉三个**，
+# 这是站内 AUC 0.72 下的必然取舍，没有既准又全的解。
+#
+# 试过没赢: 「p / 该站常年」（精度封顶 30.7%）、「p − 该站常年」
+# （0.20 门槛下 40.7%，仍低于绝对概率的 43.8%）。分站基线听着有道理，
+# 但 v2 已经把站的差异学进去了，再除一次等于重复扣除。
+PEAK_WARN_TH = 0.40
 
 # 「基本能早早定下来」的门槛（P(见顶<13时)，**原始概率，没有校准表**）。
 #
@@ -745,6 +766,32 @@ def main() -> int:
             print(f"[warn] {_pkp} 读不出来（{e}），本轮不出见顶时刻概率",
                   file=sys.stderr)
 
+    # 见顶时刻判别器 **v2**（<model>.peak2.pkl）: 分站 · 纯观测 · 满历史。
+    # 见 train_nowcast.fit_peak_prob2 —— 站内 AUC 0.639 -> 0.731（十站全正）。
+    # 有 v2 就用 v2，没有就退回旧的 peak.pkl，两边都缺则整列不出。
+    _PEAK2 = None
+    _pk2 = args.model + ".peak2.pkl"
+    if os.path.exists(_pk2) and _NP is not None:
+        try:
+            import pickle as _pk4
+            _PEAK2 = _pk4.load(open(_pk2, "rb")).get(cutoff)
+        except Exception as e:                             # noqa: BLE001
+            print(f"[warn] {_pk2} 读不出来（{e}），退回旧判别器", file=sys.stderr)
+
+    def _peak_prob2(stn, hrs):
+        """(早, 正常, 晚, 校准后的晚, 该站气候基线)。v2 只判「晚 vs 不晚」，
+        所以「早/正常」两栏返回 None —— 调用方要能接受。"""
+        if not _PEAK2 or stn not in _PEAK2:
+            return None
+        g = _PEAK2[stn]
+        x = N.peak2_feats(hrs, cutoff, tgt.isoformat())
+        if x is None:
+            return None
+        p = float(g["clf"].predict_proba(_NP.asarray([x], float))[0][1])
+        i = next((k for k, e in enumerate(g["edges"]) if p < e), len(g["edges"]))
+        c = g["cal"][i] if i < len(g["cal"]) else None
+        return None, None, p, c, g["base"]
+
     def _peak_prob(f, med_, names_):
         """返回 (早, 正常, 晚, 校准后的晚)。缺模型/缺 sklearn 返回 None。
 
@@ -1001,6 +1048,13 @@ def main() -> int:
         # rise>=0.5 时误差是双向的（14 时报高占 41%），不印 —— 那时以「预报」
         # 和「不排除」两列为准。
         _pp = _peak_prob(f, med, names)   # 「预期命中」要用它当第三维，须先算
+        # v2 **只驱动见顶风险表本身**，绝不回写 _pp。原因:
+        #   - hit_table 的第三维（peak_edges）是按**旧判别器**的概率分布分的格，
+        #     换成 v2 的概率就是拿新尺子读旧刻度
+        #   - 档位建议的抬档例外、「不排除」下限，都是拿旧 p_late 双向验证过的
+        # 要把 v2 接到那几处，得各自重做 A/B。这里只换它已经证明更好的那一列。
+        _pp2 = _peak_prob2(stn, hrs)
+        _base = _pp2[4] if _pp2 is not None else None
         # 校准后的晚见顶概率。见顶风险表、「不排除」下限、档位建议**共用这一个数**
         _pl = None if _pp is None else (_pp[3] if _pp[3] is not None else _pp[2])
         _warn = _pl is not None and _pl >= PEAK_WARN_TH
@@ -1096,8 +1150,12 @@ def main() -> int:
               + F.R(f"{rise:+.1f}", W_RISE) + ehs + F.R(conf, W_UP) + rc
               + F.R(agr, W_AGR) + _otag + f"   {note}")
         rows_out.append((stn, shown, msf, rise))
-        if _pp is not None:
-            _peaks.append((stn, *_pp))
+        # 见顶风险表: 有 v2 就用 v2 的「晚」，早/正常两栏仍取旧的
+        if _pp2 is not None:
+            _peaks.append((stn, (_pp[0] if _pp else None), (_pp[1] if _pp else None),
+                           _pp2[2], _pp2[3], _base))
+        elif _pp is not None:
+            _peaks.append((stn, *_pp, None))
         if cutoff == RESID_CUTOFF:
             _raw_today[stn] = round(fin_raw, 4)        # **订正前**的值，见落盘处
             if b is not None and round(fin_raw) != shown:
@@ -1152,22 +1210,27 @@ def main() -> int:
 
     if _peaks:
         print(f"\n── 16 点后见顶的风险（**不改上面的预报值**）")
-        _PW = (16, 9, 11, 10, 8, 7)
+        _PW = (16, 9, 11, 10, 8, 9, 7)
         print("  " + F.L("站点", _PW[0])
               + "".join(F.R(t, x) for t, x in
-                        zip(("早<13时", "正常13-15", "晚>=16时", "校准后", "倍数"),
-                            _PW[1:]))
+                        zip(("早<13时", "正常13-15", "晚>=16时", "校准后",
+                             "该站常年", "倍数"), _PW[1:]))
               + "   提示")
         _BASE = 0.107          # 全站 >=16 见顶的基础率
-        for _s, _e, _n, _l, _c in sorted(_peaks, key=lambda x: -x[3]):
+        for _s, _e, _n, _l, _c, _b in sorted(_peaks, key=lambda x: -x[3]):
             _use = _c if _c is not None else _l
+            if _use is None:
+                continue
             # 门槛见 PEAK_WARN_TH。**不说「极有可能」** —— 最高档实测也只有 38%。
-            _hint = ("⚠ 16 点后见顶风险偏高" if _use >= PEAK_WARN_TH
-                     else ("基本能早早定下来" if _e >= PEAK_EARLY_TH else ""))
+            _hint = ("⚠ 16 点后见顶风险偏高" if (_use is not None and _use >= PEAK_WARN_TH)
+                     else ("基本能早早定下来"
+                           if (_e is not None and _e >= PEAK_EARLY_TH) else ""))
+            _pc = lambda v: "--" if v is None else f"{v:.0%}"
+            _bs = _b if _b is not None else _BASE
             print("  " + F.L(f"{_s} {N.NAMES.get(_s, '')}", _PW[0])
                   + "".join(F.R(t, x) for t, x in
-                            zip((f"{_e:.0%}", f"{_n:.0%}", f"{_l:.0%}",
-                                 f"{_use:.0%}", f"{_use / _BASE:.1f}倍"), _PW[1:]))
+                            zip((_pc(_e), _pc(_n), _pc(_l), _pc(_use), _pc(_b),
+                                 f"{_use / max(_bs, 1e-6):.1f}倍"), _PW[1:]))
                   + f"   {_hint}")
         print(f"  分档: 早=<13 时 / 正常=13-15 时 / **晚=>=16 时**。"
               f"15 点见顶不算晚 —— 15 时那轮（15:15 起报）看得到 15:00 的观测、"
@@ -1175,9 +1238,14 @@ def main() -> int:
         print(f"  全站基础率 {_BASE:.0%}（成都 29% / 重庆 23% / 武汉 19% / "
               f"上海 2% / 青岛 3%）。AUC 0.767，最高 5% 那档实测 37%、是平常 3.5 倍 "
               f"—— **不是「极有可能」，是「风险高 3 倍」**。")
-        print(f"  阈值 20%: 每天平均亮 1.7 个站，其中 29% 会真的 >=16 见顶，"
-              f"能抓住全部晚见顶站的 47%，**每天仍会漏掉约 0.5 个**。"
-              f"每天真正 >=16 见顶的只有约 1.07 个站，漏是必然的。")
+        print(f"  阈值 {PEAK_WARN_TH:.0%}（2026-08-25 从 20% 提高，判别器同时换成分站版）:"
+              f" 每天平均亮 0.6 个站，其中 **44% 会真的 >=16 见顶**，"
+              f"两个半段实测 44.5%/43.8%、差不到 1 个百分点。")
+        print(f"  代价是召回只有 25% —— **四个晚见顶站会漏掉三个**。站内判别力"
+              f"（AUC 0.72）就这么多，没有既准又全的解: 门槛 20% 时召回 57% "
+              f"但精度只有 32%。**标了值得当回事，没标不等于安全。**")
+        print(f"  「该站常年」是该站自己的历史晚见顶率，「倍数」= 校准后 / 常年 ——"
+              f" 成都常年 24%、上海 2%，同样印 30% 对两个站的含义完全不同。")
         print(f"  「基本能早早定下来」门槛 {PEAK_EARLY_TH:.0%}（原 50%，2026-08-22 提高）。"
               f"样本外实测精度: 9 时 83% / 12 时 91% / 15 时 96%，标了之后真的"
               f"拖到 >=16 见顶的只有 1.5~3.8%。**两条提示都不改预报值。**")

@@ -492,6 +492,31 @@ def check_contracts(args):
                                     "bucket_table.json")),
       "bucket_table.json 在（档位配置建议的数据源）")
 
+    # 见顶判别器 v2（分站/纯观测）。**特征函数训练端与预测端共用 peak2_feats**，
+    # 但模型是按站存的 —— 站少了就整站没提示，而且不报错。所以查覆盖。
+    try:
+        import pickle as _pk6
+        import train_nowcast as _TN6
+        import stations as _ST6
+        for _mp6 in ("nowcast_nwp.json", "nowcast_late.json"):
+            _f6 = _mp6 + ".peak2.pkl"
+            if not os.path.exists(_f6):
+                rep(True, f"{os.path.basename(_f6)}", "缺（生产退回旧判别器）")
+                continue
+            _m6 = _pk6.load(open(_f6, "rb"))
+            _cuts = sorted(_m6)
+            _miss = {c: sorted(set(_ST6.ICAOS) - set(_m6[c])) for c in _cuts}
+            _bad = {c: v for c, v in _miss.items() if v}
+            rep(not _bad, f"{os.path.basename(_f6)} 覆盖全部 10 站",
+                f"时次 {_cuts}" + ("" if not _bad else f"  -> 缺 {_bad}"))
+            for c in _cuts[:1]:
+                _n6 = _m6[c][sorted(_m6[c])[0]]["clf"].n_features_in_
+                rep(_n6 == len(_TN6.PEAK2_FEATS),
+                    f"{c} 时 v2 特征数与 PEAK2_FEATS 一致",
+                    f"模型 {_n6} / 定义 {len(_TN6.PEAK2_FEATS)}")
+    except Exception as _e6:                               # noqa: BLE001
+        rep(False, "见顶判别器 v2 可检查", f"{type(_e6).__name__}: {_e6}")
+
     # 见顶提示记账器: 它读的是 predict_nowcast 印出来的表，**格式一变就静默
     # 解析不到**（记 0 条也不报错）。所以这里拿最近一天的日志真跑一遍解析。
     try:

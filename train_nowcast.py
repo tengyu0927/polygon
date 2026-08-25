@@ -1045,6 +1045,143 @@ def fit_settled(rows, med, names):
               min_samples_leaf=15, random_state=0).fit(_np.asarray(X, float), y)
 
 
+# ---------------------------------------------------------------- 见顶时刻 v2
+#
+# **分站 · 纯观测 · 满历史**的见顶时刻判别器。2026-08-25 加。
+#
+# 为什么要另起一套（而不是改 fit_peak_prob）:
+#
+#   1. **训练量差 5 倍。** fit_peak_prob 用主模型的 names，里面有 NWP，
+#      于是 --peak-only 只能用 2024 年后有模式数据的行（每站约 1800 站日）。
+#      **但见顶时刻只需要观测** —— 观测有 30 年，每站 8000~11000 站日。
+#   2. **特征是为「预报温度」选的，不是为「预报见顶时刻」选的。**
+#   3. **机制按站型符号相反，合并模型学不动。** 逐站单变量 AUC 实测:
+#        上海  上午湿度 0.832 / 上午有雨 0.792 / 6-12 升温 **0.195**
+#              —— 沿海站是「上午阴雨压住、午后转晴才升」，升得少反而晚
+#        成都  6-12 升温 **0.621** / 已达 0.584
+#              —— 盆地站是「一路稳升停不下来」，升得多才晚
+#      符号完全相反。合并模型即使带站点哑变量，也只能调基准率、调不了斜率符号。
+#
+# 实测（12 时截止，按年分 4 折交叉，样本外，89275 站日）:
+#     站            现行    分站v2     提升
+#     青岛         0.561    0.778    +0.217
+#     广州         0.557    0.713    +0.156
+#     郑州         0.615    0.737    +0.122
+#     北京         0.652    0.765    +0.113
+#     上海         0.721    0.819    +0.098
+#     加权平均      0.639    0.731    +0.092      十个站全部为正
+#
+# **只判见顶时刻，不改任何预报值。**
+PEAK2_FEATS = ["sofar", "t_am0", "t_am1", "t_now", "rise_am", "rise_recent",
+               "rise_2h", "wspd_am", "wspd_max", "cld_am", "cld_now",
+               "dewp_am", "dpd_am", "rh_am", "rh_now", "pres_tend",
+               "wind_u", "wind_v", "rain_am", "ts_am", "doy_sin", "doy_cos"]
+
+
+def peak2_feats(hrs, cutoff, date):
+    """见顶时刻判别器 v2 的特征。**训练端与预测端共用这一个函数。**
+
+    只吃 `load_hourly` 出来的 hrs（{小时: {t,dewp,rh,wspd,pres,cld,ts,ra,drct}}），
+    且只取 <= cutoff 的小时 —— 起报时刻之后的一律不碰，没有泄漏的余地。
+    两端各写一份是本项目最常犯的静默错配（已踩四次），所以只有这一个入口。
+
+    返回 list（顺序即 PEAK2_FEATS），缺测填 nan 交给 GBM 自己处理。
+    """
+    nan = float("nan")
+    o = {h: v for h, v in hrs.items() if h <= cutoff}
+    if len(o) < 8:
+        return None
+    am = [h for h in sorted(o) if 6 <= h <= cutoff]
+    if len(am) < 3:
+        return None
+    T = {h: o[h]["t"] for h in o}
+    col = lambda k: [o[h][k] for h in am if o[h].get(k) is not None]
+    ws, dp, rh = col("wspd"), col("dewp"), col("rh")
+    cld = col("cld")
+    pr = [(h, o[h]["pres"]) for h in am if o[h].get("pres") is not None]
+    dr = col("drct")
+    h0, h1 = min(am), max(am)
+    doy = datetime.strptime(date, "%Y-%m-%d").timetuple().tm_yday
+    mean = lambda v: (sum(v) / len(v)) if v else nan
+    return [
+        max(T.values()),                                   # sofar 已达
+        T.get(h0, nan), T.get(9, nan), T.get(cutoff, nan),
+        (T[h1] - T[h0]) if len(am) >= 2 else nan,          # 上午总升温
+        (T[cutoff] - T[9]) if (9 in T and cutoff in T) else nan,
+        (T[cutoff] - T[cutoff - 2]) if (cutoff in T and cutoff - 2 in T) else nan,
+        mean(ws), (max(ws) if ws else nan),
+        mean(cld), (o[cutoff]["cld"] if cutoff in o and o[cutoff]["cld"] is not None else nan),
+        mean(dp),
+        (mean([T[h] for h in am]) - mean(dp)) if dp else nan,   # 露点差
+        mean(rh), (o[cutoff]["rh"] if cutoff in o and o[cutoff]["rh"] is not None else nan),
+        ((pr[-1][1] - pr[0][1]) / max(1, pr[-1][0] - pr[0][0]) * 3) if len(pr) >= 2 else nan,
+        mean([math.cos(math.radians(a)) for a in dr]) if dr else nan,
+        mean([math.sin(math.radians(a)) for a in dr]) if dr else nan,
+        float(any(o[h]["ra"] for h in am)),
+        float(any(o[h]["ts"] for h in am)),
+        math.sin(2 * math.pi * doy / 365.25), math.cos(2 * math.pi * doy / 365.25),
+    ]
+
+
+def fit_peak_prob2(days, cutoff, min_pos=60):
+    """按站训见顶时刻判别器 v2。返回 {站: {clf, edges, cal, base}}。
+
+    days = load_hourly() 的输出。**只用观测，所以吃得下全部 30 年历史。**
+    校准同 fit_peak_prob: 按年分块交叉取样本外概率，再十档经验频率回填 ——
+    分块必须按年，相邻日高度相关，随机分折会把校准表做假。
+    """
+    try:
+        from sklearn.ensemble import HistGradientBoostingClassifier as _C
+        import numpy as _np
+    except ImportError:
+        return None
+    by = defaultdict(lambda: ([], [], []))
+    for (stn, d), hrs in days.items():
+        if sum(1 for h in hrs if PEAK_H0 <= h <= PEAK_H1) < 6:
+            continue
+        f = peak2_feats(hrs, cutoff, d)
+        if f is None:
+            continue
+        tmax = max(v["t"] for v in hrs.values())
+        ph = min(h for h, v in hrs.items() if v["t"] >= tmax - 1e-9)
+        X, Y, D = by[stn]
+        X.append(f); Y.append(int(ph >= 16)); D.append(d)
+    out = {}
+    mk = lambda: _C(max_depth=4, max_iter=300, learning_rate=0.06,
+                    min_samples_leaf=30, random_state=0)
+    for stn, (X, Y, D) in by.items():
+        y = _np.asarray(Y)
+        if len(y) < 800 or y.sum() < min_pos or (len(y) - y.sum()) < min_pos:
+            continue
+        Xa = _np.asarray(X, float)
+        yrs = sorted({t[:4] for t in D})
+        fold = {t: i % 4 for i, t in enumerate(yrs)}
+        oof = _np.zeros(len(y))
+        ok = True
+        for k in range(4):
+            te = _np.asarray([fold[t[:4]] == k for t in D])
+            if te.sum() < 30 or (~te).sum() < 300 or y[~te].sum() < 20:
+                ok = False
+                break
+            oof[te] = mk().fit(Xa[~te], y[~te]).predict_proba(Xa[te])[:, 1]
+        if not ok:
+            oof = mk().fit(Xa, y).predict_proba(Xa)[:, 1]   # 折不出来就退回（偏乐观）
+        q = [float(v) for v in _np.quantile(oof, [i / 10 for i in range(1, 10)])]
+        cal, lo = [], -1.0
+        for hi in q + [2.0]:
+            m = (oof >= lo) & (oof < hi)
+            cal.append(float(y[m].mean()) if m.sum() >= 30 else None)
+            lo = hi
+        for _ in range(len(cal)):
+            for j in range(len(cal) - 1):
+                if cal[j] is not None and cal[j + 1] is not None and cal[j] > cal[j + 1]:
+                    v = (cal[j] + cal[j + 1]) / 2
+                    cal[j] = cal[j + 1] = v
+        out[stn] = {"clf": mk().fit(Xa, y), "edges": q, "cal": cal,
+                    "base": float(y.mean()), "n": int(len(y))}
+    return out or None
+
+
 def fit_peak_prob(rows, med, names):
     """判别当天**见顶时刻**落在早/正常/晚哪一档。**不改任何预报值。**
 
