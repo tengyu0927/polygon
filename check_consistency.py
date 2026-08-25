@@ -511,9 +511,11 @@ def check_contracts(args):
                 f"时次 {_cuts}" + ("" if not _bad else f"  -> 缺 {_bad}"))
             for c in _cuts[:1]:
                 _n6 = _m6[c][sorted(_m6[c])[0]]["clf"].n_features_in_
-                rep(_n6 == len(_TN6.PEAK2_FEATS),
-                    f"{c} 时 v2 特征数与 PEAK2_FEATS 一致",
-                    f"模型 {_n6} / 定义 {len(_TN6.PEAK2_FEATS)}")
+                rep(_n6 == len(_TN6.PEAK2_ALL),
+                    f"{c} 时 v2 特征数与 PEAK2_ALL 一致",
+                    f"模型 {_n6} / 定义 {len(_TN6.PEAK2_ALL)}"
+                    + ("" if _n6 == len(_TN6.PEAK2_ALL) else
+                       "  -> 特征表改过，需重跑 fit_peak_prob2"))
     except Exception as _e6:                               # noqa: BLE001
         rep(False, "见顶判别器 v2 可检查", f"{type(_e6).__name__}: {_e6}")
 

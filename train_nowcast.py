@@ -1077,8 +1077,49 @@ PEAK2_FEATS = ["sofar", "t_am0", "t_am1", "t_now", "rise_am", "rise_recent",
                "dewp_am", "dpd_am", "rh_am", "rh_now", "pres_tend",
                "wind_u", "wind_v", "rain_am", "ts_am", "doy_sin", "doy_cos"]
 
+# 模式的**午后廓线**。2026-08-25 加 —— 见顶时刻由「能量输入什么时候停」决定，
+# 而 `t2m_peak_h` 就是**模式自己对「几点见顶」的回答**，一直躺在 mos.csv 里
+# 没喂给过判别器。
+#
+# **关键是怎么加。** 只用「有模式数据的行」训（2024 年后，每站约 1960 站日）
+# 会输给满历史纯观测 —— 训练量掉 5 倍不划算，这个担心是对的:
+#     12 时  满历史纯观测 0.689 | 只用有NWP的行 观测+NWP 0.672  <- 输
+# 但 GBM 天生能处理缺测，所以根本不必二选一: **满历史训，2024 年前的
+# NWP 列填 nan**，两个都要:
+#     12 时  满历史观测+NWP 0.698   (+0.009 对 A，九站六正)
+#      9 时  满历史观测+NWP 0.681   (+0.024 对 A)
+# 早时次增量更大 —— 上午观测少，模式廓线的补充价值更高。
+#
+# 列名与 mos.csv 一致；生产端 fetch_nwp 返回的 dict 也是这套键，两端同源。
+PEAK2_NWP = ["t2m_peak_h", "t2m_slope_pm", "t2m_late_minus_peak",
+             "swrad_peak_h", "swrad_half_h", "swrad_late_frac", "swrad_slope_pm",
+             "cld_onset_h", "cld_slope_pm", "cloud_cover_peakmean",
+             "shortwave_radiation_peakmean", "t2m_range"]
+# 多模式对「几点见顶」的分歧 —— 模式之间越吵，越说明今天不好定
+PEAK2_ENS = ["m_peak_h_mean", "m_peak_h_sd", "m_peak_h_range"]
+PEAK2_ALL = PEAK2_FEATS + PEAK2_NWP + PEAK2_ENS
 
-def peak2_feats(hrs, cutoff, date):
+
+def peak2_nwp(nwp, m2=()):
+    """模式午后廓线部分。nwp = fetch_nwp / mos.csv 那一行的 dict（可为 None）；
+    m2 = 追加模式的同结构 dict 列表。缺什么填 nan，交给 GBM 处理。"""
+    nan = float("nan")
+    g = lambda d, k: (float(d[k]) if d and d.get(k) not in (None, "") else nan)
+    out = [g(nwp, k) for k in PEAK2_NWP]
+    ph = [g(d, "t2m_peak_h") for d in (m2 or ())]
+    ph = [x for x in ph if x == x]                      # 去掉 nan
+    if len(ph) >= 2:
+        m = sum(ph) / len(ph)
+        sd = (sum((x - m) ** 2 for x in ph) / len(ph)) ** 0.5
+        out += [m, sd, max(ph) - min(ph)]
+    elif ph:
+        out += [ph[0], nan, nan]
+    else:
+        out += [nan, nan, nan]
+    return out
+
+
+def peak2_feats(hrs, cutoff, date, nwp=None, m2=()):
     """见顶时刻判别器 v2 的特征。**训练端与预测端共用这一个函数。**
 
     只吃 `load_hourly` 出来的 hrs（{小时: {t,dewp,rh,wspd,pres,cld,ts,ra,drct}}），
@@ -1120,10 +1161,27 @@ def peak2_feats(hrs, cutoff, date):
         float(any(o[h]["ra"] for h in am)),
         float(any(o[h]["ts"] for h in am)),
         math.sin(2 * math.pi * doy / 365.25), math.cos(2 * math.pi * doy / 365.25),
-    ]
+    ] + peak2_nwp(nwp, m2)
 
 
-def fit_peak_prob2(days, cutoff, min_pos=60):
+def peak2_load_nwp(paths=("mos.csv",), extra=()):
+    """读 mos.csv 系列，取 lead=1 的行。返回 (主模式 map, [追加模式 map...])。
+    只取 PEAK2_NWP + t2m_peak_h 用得到的列，省内存。"""
+    import csv as _csv
+    want = set(PEAK2_NWP) | {"t2m_peak_h"}
+    def one(pth):
+        m = {}
+        if not os.path.exists(pth):
+            return m
+        for r in _csv.DictReader(open(pth, encoding="utf-8")):
+            if r.get("lead") != "1":
+                continue
+            m[(r["station"], r["date"])] = {k: r[k] for k in want if k in r}
+        return m
+    return one(paths[0]), [one(f) for f in extra]
+
+
+def fit_peak_prob2(days, cutoff, min_pos=60, nwp_map=None, m2_maps=()):
     """按站训见顶时刻判别器 v2。返回 {站: {clf, edges, cal, base}}。
 
     days = load_hourly() 的输出。**只用观测，所以吃得下全部 30 年历史。**
@@ -1139,7 +1197,10 @@ def fit_peak_prob2(days, cutoff, min_pos=60):
     for (stn, d), hrs in days.items():
         if sum(1 for h in hrs if PEAK_H0 <= h <= PEAK_H1) < 6:
             continue
-        f = peak2_feats(hrs, cutoff, d)
+        k2 = (stn, d)
+        f = peak2_feats(hrs, cutoff, d,
+                        (nwp_map or {}).get(k2),
+                        [mm.get(k2) for mm in (m2_maps or ())])
         if f is None:
             continue
         tmax = max(v["t"] for v in hrs.values())
