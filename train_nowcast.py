@@ -1203,10 +1203,34 @@ def fit_peak_prob2(days, cutoff, min_pos=60, nwp_map=None, m2_maps=()):
                         [mm.get(k2) for mm in (m2_maps or ())])
         if f is None:
             continue
+        # **目标 = 「报出去的整数会不会因为 16 时之后还在涨而变掉」。**
+        # 2026-08-26 从「首达 >=16 时」换过来。
+        #
+        # 两者的关系（92703 站日实测）: 整数真变的日子 **100% 都是首达>=16**，
+        # 反过来首达>=16 里只有 82.7% 真的改变了整数 —— 剩下 17.3% 是「见顶
+        # 确实晚、但只多涨了不到半度」，对整数盘口毫无影响。旧标签在警告
+        # 一批不该警告的日子。
+        #
+        # **换目标会让 AUC 变低**（12 时站内 0.733 -> 0.714，八站六降）——
+        # 被剔掉的那 17% 不是噪声，而是「晚见顶」这个过程里较弱的一半，
+        # 删掉它们等于删掉正例中最富信息的边缘样本，剩下的正负更难分。
+        # **但 AUC 不是判据。** 把评判标准统一成「整数真的变了」之后:
+        #     时次   半A: 旧标签训→新标签训   半B      （标注率 5%）
+        #      9时      35.9% → 36.7%      34.9% → 36.0%
+        #     11时      37.5% → 38.1%      36.7% → 37.3%
+        #     12时      38.2% → 39.3%      37.6% → 38.1%
+        #     14时      38.9% → 40.9%      39.5% → 40.3%
+        #     15时      42.1% → 42.8%      42.6% → 43.1%
+        # **十个格子全赢**（五时次 × 两半段），+0.5~+2.0pt。
+        #
+        # 教训: 任务变难和预测得更有用可以同时发生。**判据永远是那个用途
+        # 自己的指标** —— 这里是「标出来的日子里，整数真变的比例」。
         tmax = max(v["t"] for v in hrs.values())
-        ph = min(h for h, v in hrs.items() if v["t"] >= tmax - 1e-9)
+        pre = [v["t"] for h, v in hrs.items() if h <= 15]
+        if not pre:
+            continue
         X, Y, D = by[stn]
-        X.append(f); Y.append(int(ph >= 16)); D.append(d)
+        X.append(f); Y.append(int(round(tmax) > round(max(pre)))); D.append(d)
     out = {}
     mk = lambda: _C(max_depth=4, max_iter=300, learning_rate=0.06,
                     min_samples_leaf=30, random_state=0)
