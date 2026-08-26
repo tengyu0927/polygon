@@ -53,8 +53,10 @@ DDL = """CREATE TABLE IF NOT EXISTS hint (
   PRIMARY KEY (target_date, cutoff, station, kind));"""
 
 # 见顶风险表的一行。宽度对齐前后都能匹配（一律走 \\s+，不依赖列宽）
-ROW = re.compile(r"^\s+(Z[A-Z]{3})\s+\S+\s+(\d+)%\s+(\d+)%\s+(\d+)%\s+(\d+)%"
-                 r"\s+[\d.]+倍\s*(.*)$")
+# 百分比列数变过（2026-08-26 加了「该站常年」，从 4 个变 5 个），所以
+# **不写死列数** —— 抓「ICAO + 站名 + 一串百分比 + N倍 + 提示」，百分比按
+# 出现顺序取: [0]=早<13、[-2]=会改整数（原「校准后」）、[-1]=该站常年。
+ROW = re.compile(r"^\s+(Z[A-Z]{3})\s+\S+\s+((?:\d+%\s+)+)[\d.]+倍\s*(.*)$")
 
 
 def peaks(db: str, d: str):
@@ -93,7 +95,10 @@ def parse(d: str):
         if m and "#####" in ln:
             cut, inb = int(m.group(1)), False
             continue
-        if "16 点后见顶的风险" in ln:
+        # 标题在 2026-08-26 从「16 点后见顶的风险」改成「16 点后还在涨、
+        # 会改掉整数的风险」（换了预测目标）。**两种都认** —— 历史日志要
+        # 还能回填，而且以后再改标题也不该让记账静默断掉。
+        if "16 点后见顶的风险" in ln or "16 点后还在涨" in ln:
             inb = True
             continue
         if inb and (ln.startswith("  分档") or ln.startswith("──")
@@ -105,8 +110,13 @@ def parse(d: str):
         r = ROW.match(ln.rstrip())
         if not r:
             continue
-        stn, early, _, _, cal, hint = r.groups()
-        if "⚠" in hint:
+        stn, pcts, hint = r.groups()
+        nums = [int(x) for x in re.findall(r"(\d+)%", pcts)]
+        if len(nums) < 4:
+            continue
+        early, cal = nums[0], nums[-2]
+        if "⚠" in hint:          # 提示语从「见顶风险偏高」改成「整数可能改」，
+                                     # 用 ⚠ 符号判，不依赖文案
             out.append((cut, stn, "warn", int(cal) / 100))
         elif "早早" in hint:
             out.append((cut, stn, "early", int(early) / 100))

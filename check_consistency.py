@@ -524,15 +524,22 @@ def check_contracts(args):
     try:
         import datetime as _dt5
         import peak_hint_track as _H5
-        _got = []
-        for _k in range(1, 6):
-            _d5 = (_dt5.date.today() - _dt5.timedelta(days=_k)).isoformat()
-            if os.path.exists(f"pred_{_d5}.log"):
-                _got = _H5.parse(_d5)
-                break
+        # **查最近 3 天里最新的那份日志，不是「第一份能找到的」。**
+        # 2026-08-26 踩过: 改了表头文案后记账器解析不到，而这条检查当时是
+        # 绿的 —— 因为它从昨天开始往回找，找到的是改文案之前的旧日志。
+        # 改成: 今天的日志若存在就必须能解析；否则往回最多找 3 天。
+        _got, _d5 = [], None
+        for _k in range(0, 4):
+            _dd = (_dt5.date.today() - _dt5.timedelta(days=_k)).isoformat()
+            if os.path.exists(f"pred_{_dd}.log"):
+                _g = _H5.parse(_dd)
+                if _d5 is None:
+                    _d5, _got = _dd, _g       # 最新那份是判据
+                if _g:
+                    break
         rep(bool(_got), "见顶提示记账器能解析当前日志格式",
             f"{_d5} 解出 {len(_got)} 条标注"
-            + ("" if _got else "  -> 表格式变了？改 peak_hint_track.ROW"))
+            + ("" if _got else "  -> 表头文案改过？看 peak_hint_track 的标题匹配"))
     except Exception as _e5:                               # noqa: BLE001
         rep(False, "见顶提示记账器可用", f"{type(_e5).__name__}: {_e5}")
 
