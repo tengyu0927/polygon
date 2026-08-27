@@ -540,6 +540,21 @@ def check_contracts(args):
         rep(bool(_got), "见顶提示记账器能解析当前日志格式",
             f"{_d5} 解出 {len(_got)} 条标注"
             + ("" if _got else "  -> 表头文案改过？看 peak_hint_track 的标题匹配"))
+        # **两种提示要分开查。** 只看总条数会漏掉「一类被吞、另一类还在」——
+        # 2026-08-26~27 就是这样: ⚠ 的提示文案「⚠ 16 点后还在涨，整数可能改」
+        # 与段落标题「── 16 点后还在涨、会改掉整数的风险」撞词，每条 ⚠ 数据行
+        # 都被 parse 当成标题跳过，两天一条 ⚠ 没记上，而这条检查一直是绿的
+        # （早早还解得出来，总条数不为零）。
+        # 判据: 日志里 ⚠ 出现过几次，就该解出几条 warn。
+        if _d5:
+            _txt5 = open(f"pred_{_d5}.log", encoding="utf-8",
+                         errors="replace").read()
+            _want = _txt5.count("⚠ 16 点后")
+            _have = sum(1 for _r in _got if _r[2] == "warn")
+            rep(_want == _have, "⚠ 提示解析条数与日志一致",
+                f"{_d5} 日志 {_want} 条 / 解出 {_have} 条"
+                + ("" if _want == _have else
+                   "  -> 提示文案与段落标题撞词？看 peak_hint_track.parse"))
     except Exception as _e5:                               # noqa: BLE001
         rep(False, "见顶提示记账器可用", f"{type(_e5).__name__}: {_e5}")
 
