@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import collections
 import json
 import os
 import re
@@ -28,7 +29,8 @@ import subprocess
 import sys
 from datetime import datetime, timedelta
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) or ".")
+HERE = os.path.dirname(os.path.abspath(__file__)) or "."
+sys.path.insert(0, HERE)
 import train_nowcast as N                          # noqa: E402
 
 TOL = 1e-6
@@ -523,6 +525,7 @@ def check_contracts(args):
     # 解析不到**（记 0 条也不报错）。所以这里拿最近一天的日志真跑一遍解析。
     try:
         import datetime as _dt5
+        import sqlite3 as _sq5
         import peak_hint_track as _H5
         # **查最近 3 天里最新的那份日志，不是「第一份能找到的」。**
         # 2026-08-26 踩过: 改了表头文案后记账器解析不到，而这条检查当时是
@@ -555,8 +558,109 @@ def check_contracts(args):
                 f"{_d5} 日志 {_want} 条 / 解出 {_have} 条"
                 + ("" if _want == _have else
                    "  -> 提示文案与段落标题撞词？看 peak_hint_track.parse"))
+        # **记账库有没有真的在长。** 上面两条只验「解析得出来」，验不了
+        # 「run_daily 有没有把它记进库」—— 2026-08-31 查出记账器上线以来
+        # 从 cron 里一条都没记成过: run_daily 23:59 启动，跑到那一步已过
+        # 午夜，不给 --date 时 `now()` 返回「明天」，明天没数据就静默跳过，
+        # 日志只留一行「峰值时段还没走完」，看着像正常拦截。库里的数据全是
+        # 手动回填的，而上面两条检查一直是绿的。
+        # 判据: 昨天（峰值时段必然已走完）应当在库里。
+        _yst = (_dt5.date.today() - _dt5.timedelta(days=1)).isoformat()
+        try:
+            _c5 = _sq5.connect(os.path.join(HERE, "peak_hint.sqlite"))
+            _n5 = _c5.execute(
+                "SELECT count(*) FROM hint WHERE target_date = ?", (_yst,)
+            ).fetchone()[0]
+            _last = _c5.execute("SELECT max(target_date) FROM hint").fetchone()[0]
+            _c5.close()
+            _err5 = None
+        except Exception as _e5b:                          # noqa: BLE001
+            # **不能把「读不出来」伪装成「0 行」。** 2026-08-31 就栽在这:
+            # 这段里一个 NameError 被吞掉、回退成 0 行，报出来像是真的没记上，
+            # 查了半天才发现是检查器自己坏了。查静默失效的检查项自己静默失效，
+            # 正是本仓库反复踩的那个形态。
+            _n5, _last, _err5 = None, None, f"{type(_e5b).__name__}: {_e5b}"
+        if _err5:
+            rep(False, "记账库昨天有进账", f"库读不出来 —— {_err5}")
+        else:
+            rep(_n5 > 0, "记账库昨天有进账",
+                f"{_yst} {_n5} 行，库里最新 {_last}"
+                + ("" if _n5 else "  -> run_daily 那一步没记上？看是否漏传 --date"))
     except Exception as _e5:                               # noqa: BLE001
         rep(False, "见顶提示记账器可用", f"{type(_e5).__name__}: {_e5}")
+
+    # **起报时刻的观测可得性 vs 事后重算。**
+    #
+    # `load_hourly` 按**整点小时**分桶、取桶内最高温，特征取 `h <= cutoff`。
+    # 生产 :15 起报，看不到本小时 :30/:45 的报文；训练却把它算进了「已达」。
+    # 于是训练特征里的「已达」系统性高于生产能拿到的值 —— 这是训练/线上错配，
+    # 不只是回测偏乐观。2026-08-31 量到（2024 年起，66038 个站日小时）:
+    #     时次    「:15 后更高」占比   期望抬升
+    #      9时        17.1%        +0.204℃
+    #     11时        13.8%        +0.156℃
+    #     13时         9.5%        +0.106℃
+    #     15时         4.8%        +0.053℃
+    #     合计        11.3%        +0.128℃（发生时平均高 1.14℃）
+    #
+    # **上面那条 [1] 逐列比对看不见它** —— 它训练端走 load_hourly、预测端走
+    # from_db，但两边都在事后读同一个 cn.sqlite，那时 :30 的报文早到齐了。
+    # 唯一能看见的办法是拿**生产当时真的印出来的**「已达」跟事后重算的比，
+    # 就是下面这条。
+    #
+    # 判据是「有没有变得更糟」，不是「有没有这个毛病」—— 毛病还在，修法要把
+    # cutoff 从小时改成时刻（h:15），同时动训练和预测两端，改完所有历史回测
+    # 数字失效、需重跑重训。在那之前这条至少让它每天可见。
+    try:
+        import glob as _g7
+        _lg = sorted(_g7.glob(os.path.join(HERE, "pred_2026-*.log")))
+        _row7 = re.compile(r"^\s{2,4}(Z[A-Z]{3}) \S+\s+(-?\d+)\s+(-?\d+)"
+                           r"\s+(-?\d+)\s+[+-]?[\d.]+\s+\d+%")
+        _n7 = _d7 = 0
+        _gap = 0.0
+        _worst = None
+        if _lg:
+            _f7 = _lg[-2] if len(_lg) >= 2 else _lg[-1]   # 用完整的前一天
+            _day7 = os.path.basename(_f7)[5:15]
+            _hb = collections.defaultdict(dict)
+            for _s7, _h7, _t7 in _sq5.connect(
+                    os.path.join(HERE, "cn.sqlite")).execute(
+                    "SELECT station, CAST(strftime('%H',"
+                    "datetime(valid_time_gmt,'unixepoch','+8 hours')) AS INT),"
+                    " temp_c FROM obs WHERE local_date = ? AND temp_c IS NOT NULL",
+                    (_day7,)):
+                if _h7 not in _hb[_s7] or _t7 > _hb[_s7][_h7]:
+                    _hb[_s7][_h7] = _t7
+            _cut7 = None
+            for _ln in open(_f7, encoding="utf-8", errors="replace"):
+                _m7 = re.search(r"(\d{1,2}) 时起报", _ln)
+                if _m7 and "#####" in _ln:
+                    _cut7 = int(_m7.group(1))
+                    continue
+                _r7 = _row7.match(_ln.rstrip())
+                if not _r7 or _cut7 is None or _cut7 > 15:
+                    continue
+                _v7 = _hb.get(_r7.group(1))
+                if not _v7:
+                    continue
+                _post = [_t for _hh, _t in _v7.items() if _hh <= _cut7]
+                if not _post:
+                    continue
+                _live, _now = int(_r7.group(4)), max(_post)
+                _n7 += 1
+                if round(_now) - _live >= 1:
+                    _d7 += 1
+                    _gap += _now - _live
+                    if _worst is None or _now - _live > _worst[3]:
+                        _worst = (_day7, _cut7, _r7.group(1), _now - _live)
+        _frac = (_d7 / _n7) if _n7 else 0.0
+        _mean = (_gap / _n7) if _n7 else 0.0
+        rep(_n7 == 0 or (_frac <= 0.25 and _mean <= 0.40),
+            "起报时「已达」与事后重算的差距没有变大",
+            f"{_d7}/{_n7} 行偏低（{100 * _frac:.0f}%），平均 {_mean:+.2f}℃"
+            + (f"，最大 {_worst[2]} {_worst[1]}时 {_worst[3]:+.0f}℃" if _worst else "")
+            + "  [已知: load_hourly 按整点分桶，训练看得到 :15 后的报文，生产看不到]")
+    except Exception as _e7:                               # noqa: BLE001
+        rep(False, "起报时观测可得性可检查", f"{type(_e7).__name__}: {_e7}")
 
     # run0 前瞻采集的字段覆盖。**这条要攒十个月才见分晓，所以必须机器查。**
     # 2026-08-22: 采了三周才发现旧表只存了 gfs_global 的 temperature_2m，
