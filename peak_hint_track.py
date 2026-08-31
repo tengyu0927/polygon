@@ -198,8 +198,24 @@ def parse(d: str):
     return out
 
 
+def _default_date() -> str:
+    """不给 --date 时记哪一天。
+
+    **凌晨回退到昨天。** run_daily.sh 23:59 启动，跑到记账这一步已过十几
+    分钟、早过午夜，`now()` 给的是「明天」—— 明天没数据就静默跳过，日志里
+    只留一行「峰值时段还没走完」，看着像正常拦截。2026-08-31 查出来时，
+    记账器上线以来从 cron 里一条都没记成过。
+    真正的修法是调用方显式传 --date（run_daily 已改），这里只是兜底:
+    峰值时段到 PEAK_H1（19 时），凌晨 6 点前当天绝无可能走完，一律算昨天。
+    """
+    now = datetime.now(CST)
+    if now.hour < 6:
+        now -= timedelta(days=1)
+    return now.strftime("%Y-%m-%d")
+
+
 def log(a) -> int:
-    d = a.date or datetime.now(CST).strftime("%Y-%m-%d")
+    d = a.date or _default_date()
     pk = peaks(a.obs_db, d)
     if not pk:
         print(f"[hint] {d} 峰值时段还没走完（或没观测），本次不记", file=sys.stderr)
