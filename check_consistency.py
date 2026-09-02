@@ -662,6 +662,53 @@ def check_contracts(args):
     except Exception as _e7:                               # noqa: BLE001
         rep(False, "起报时观测可得性可检查", f"{type(_e7).__name__}: {_e7}")
 
+    # **「不排除」p90 的契约覆盖。** 契约是「被实际值超过 <=10%」，即覆盖 >=90%。
+    # 2026-09-02 量到线上只有 86%（08-22~09-02，701 行，七个时次 85/81/88/84/
+    # 86/88/88 全部低于 90%，符号检验 p=0.008），而回测是 94.3% —— 回测偏乐观。
+    # 不是那两条钳制造成的（被压过的行覆盖 93%，没压过的 85%），是 q90 原始
+    # 输出在生产上就偏低。根因未定（load_hourly 泄漏解释一部分，但漏掉的
+    # 80/99 差整整 1 度，泄漏只值 0.128℃）。
+    # 这条不判「有没有达标」（已知没达标），判**有没有继续掉**。
+    try:
+        _lg8 = sorted(_g7.glob(os.path.join(HERE, "pred_2026-*.log")))[-14:]
+        _row8 = re.compile(r"^\s{2,4}(Z[A-Z]{3}) \S+\s+(-?\d+)\s+(-?\d+)"
+                           r"\s+(-?\d+)\s+[+-]?[\d.]+\s+\d+%")
+        _c8 = _sq5.connect(os.path.join(HERE, "cn.sqlite"))
+        _n8 = _k8 = 0
+        for _f8 in _lg8:
+            _d8 = os.path.basename(_f8)[5:15]
+            _mx = {}
+            for _s8, _h8, _t8 in _c8.execute(
+                    "SELECT station, CAST(strftime('%H',"
+                    "datetime(valid_time_gmt,'unixepoch','+8 hours')) AS INT),"
+                    " temp_c FROM obs WHERE local_date = ? AND temp_c IS NOT NULL",
+                    (_d8,)):
+                if _s8 not in _mx or _t8 > _mx[_s8][0]:
+                    _mx[_s8] = (_t8, _h8)
+                if _mx[_s8][1] < _h8:
+                    _mx[_s8] = (max(_mx[_s8][0], _t8), _h8)
+            _done = {k for k, v in _mx.items() if v[1] >= 19}
+            _cut8 = None
+            for _ln in open(_f8, encoding="utf-8", errors="replace"):
+                _m8 = re.search(r"(\d{1,2}) 时起报", _ln)
+                if _m8 and "#####" in _ln:
+                    _cut8 = int(_m8.group(1))
+                    continue
+                _r8 = _row8.match(_ln.rstrip())
+                if not _r8 or _cut8 is None or _cut8 > 15:
+                    continue
+                if _r8.group(1) not in _done:
+                    continue
+                _n8 += 1
+                _k8 += int(_r8.group(3)) >= round(_mx[_r8.group(1)][0])
+        _cov8 = (_k8 / _n8) if _n8 else 1.0
+        rep(_n8 < 100 or _cov8 >= 0.80,
+            "「不排除」p90 覆盖没有继续下滑",
+            f"近 {len(_lg8)} 天 {_k8}/{_n8} = {100 * _cov8:.0f}%"
+            + "  [契约 90%，已知线上约 86%；<80% 说明又恶化了]")
+    except Exception as _e8:                               # noqa: BLE001
+        rep(False, "p90 覆盖可检查", f"{type(_e8).__name__}: {_e8}")
+
     # run0 前瞻采集的字段覆盖。**这条要攒十个月才见分晓，所以必须机器查。**
     # 2026-08-22: 采了三周才发现旧表只存了 gfs_global 的 temperature_2m，
     # 而模型要的是逐模式的 tmax/cloud_peak/swrad_peak —— 照那样攒满十个月，
